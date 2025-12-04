@@ -110,9 +110,9 @@ class Nitter_ImgBB_Client {
             $post_data['name'] = sanitize_title($name);
         }
         
-        // Use WordPress HTTP API
+        // Use WordPress HTTP API with extended timeout for large GIF uploads
         $response = wp_remote_post($this->api_endpoint, array(
-            'timeout' => 30,
+            'timeout' => 120,  // Increased from 30s to 120s for large files (15-20MB GIFs)
             'body' => $post_data
         ));
         
