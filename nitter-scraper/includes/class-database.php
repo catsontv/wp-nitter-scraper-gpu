@@ -154,7 +154,8 @@ class Nitter_Database {
             'max_gif_size_mb' => '20',
             'imgbb_api_key' => '',
             'auto_delete_local_files' => '1',
-            'temp_folder_path' => 'wp-content/uploads/nitter-temp'
+            'temp_folder_path' => 'wp-content/uploads/nitter-temp',
+            'parallel_video_count' => '5'  // NEW: Number of videos to process in parallel
         );
         
         $settings_table = $this->wpdb->prefix . 'nitter_settings';
