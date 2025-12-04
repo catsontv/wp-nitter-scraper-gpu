@@ -41,8 +41,8 @@ define('WP_USE_THEMES', false);
 
 // Find wp-load.php by navigating up from plugin directory
 // Plugin structure: wp-content/plugins/nitter-scraper/includes/video-worker.php
-// Target: wp-load.php in WordPress root
-$wp_load = dirname(dirname(dirname(dirname(__FILE__)))) . '/wp-load.php';
+// Target: wp-load.php in WordPress root (5 levels up)
+$wp_load = dirname(dirname(dirname(dirname(dirname(__FILE__))))) . '/wp-load.php';
 
 if (!file_exists($wp_load)) {
     fwrite(STDERR, "Error: WordPress not found at {$wp_load}\n");
