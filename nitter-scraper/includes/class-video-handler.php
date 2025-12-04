@@ -1,4 +1,3 @@
-```php
 <?php
 if (!defined('ABSPATH')) {
     exit;
@@ -6,7 +5,7 @@ if (!defined('ABSPATH')) {
 
 /**
  * Handles video download, conversion to GIF, ImgBB upload, and file management
- * Phase 4: Complete pipeline with ImgBB integration + automatic batch processing
+ * Extended for parallel processing support (Windows compatible)
  */
 class Nitter_Video_Handler {
     
@@ -24,6 +23,7 @@ class Nitter_Video_Handler {
     private $max_size_mb;
     private $temp_folder;
     private $auto_delete;
+    private $parallel_count; // NEW: Number of videos to process in parallel
     
     public function __construct() {
         $this->database = nitter_get_database();
@@ -42,12 +42,13 @@ class Nitter_Video_Handler {
         $this->max_duration = intval($this->database->get_setting('max_video_duration', 90));
         $this->max_size_mb = intval($this->database->get_setting('max_gif_size_mb', 20));
         $this->auto_delete = boolval($this->database->get_setting('auto_delete_local_files', 1));
+        $this->parallel_count = intval($this->database->get_setting('parallel_video_count', 5)); // NEW
         
         // Get temp folder path
         $temp_path = $this->database->get_setting('temp_folder_path', 'wp-content/uploads/nitter-temp');
         
         // Convert relative path to absolute
-        if (strpos($temp_path, '/') !== 0) {
+        if (strpos($temp_path, '/') !== 0 && strpos($temp_path, 'C:') !== 0) {
             $this->temp_folder = ABSPATH . $temp_path;
         } else {
             $this->temp_folder = $temp_path;
@@ -107,8 +108,8 @@ class Nitter_Video_Handler {
     }
     
     /**
-     * Process pending videos in batch (called by cron)
-     * Processes up to 3 videos per run
+     * Process pending videos in batch (called by cron or manual trigger)
+     * Windows-compatible parallel processing using proc_open
      */
     public function process_pending_batch() {
         // Check if video processing is enabled
@@ -123,28 +124,111 @@ class Nitter_Video_Handler {
             return;
         }
         
-        // Get pending videos (limit 3 per run)
-        $pending = $this->database->get_pending_videos(3);
+        // Get pending videos based on parallel_count setting
+        $pending = $this->database->get_pending_videos($this->parallel_count);
         
         if (empty($pending)) {
             return; // Nothing to process
         }
         
-        $this->database->add_log('video_conversion', 'Cron: Processing ' . count($pending) . ' pending videos...');
+        $count = count($pending);
+        $this->database->add_log('video_conversion', "Starting parallel processing of {$count} videos...");
+        
+        // Spawn parallel processes for each video
+        $processes = array();
+        $pipes_array = array();
         
         foreach ($pending as $entry) {
-            $result = $this->process_video($entry);
+            // Mark as processing immediately to prevent duplicate processing
+            $this->database->update_video_conversion_status($entry->id, 'processing');
             
-            if ($result['status'] === 'completed') {
-                $this->database->add_log('video_conversion', "Cron: Video ID {$entry->id} processed successfully");
-            } else if ($result['status'] === 'skipped') {
-                $this->database->add_log('video_conversion', "Cron: Video ID {$entry->id} skipped: {$result['reason']}");
-            } else {
-                $this->database->add_log('video_conversion', "Cron: Video ID {$entry->id} failed: {$result['error']}");
+            $process_info = $this->spawn_video_worker($entry->id);
+            if ($process_info) {
+                $processes[] = $process_info['process'];
+                $pipes_array[] = $process_info['pipes'];
+                $this->database->add_log('video_conversion', "Spawned worker for video ID {$entry->id}");
             }
         }
         
-        $this->database->add_log('video_conversion', 'Cron: Batch processing completed');
+        // Wait for all processes to complete
+        $this->database->add_log('video_conversion', "Waiting for {$count} parallel workers to complete...");
+        
+        foreach ($processes as $idx => $process) {
+            // Read output from process
+            $stdout = stream_get_contents($pipes_array[$idx][1]);
+            $stderr = stream_get_contents($pipes_array[$idx][2]);
+            
+            // Close pipes
+            fclose($pipes_array[$idx][0]);
+            fclose($pipes_array[$idx][1]);
+            fclose($pipes_array[$idx][2]);
+            
+            // Wait for process to finish and get exit code
+            $exit_code = proc_close($process);
+            
+            // Log any output
+            if (!empty($stdout)) {
+                $this->database->add_log('video_conversion', "Worker #{$idx} output: {$stdout}");
+            }
+            if (!empty($stderr) && $exit_code !== 0) {
+                $this->database->add_log('video_conversion', "Worker #{$idx} error: {$stderr}");
+            }
+        }
+        
+        $this->database->add_log('video_conversion', 'Parallel batch processing COMPLETED');
+    }
+    
+    /**
+     * Spawn a separate PHP process to handle one video (Windows compatible)
+     */
+    private function spawn_video_worker($entry_id) {
+        $is_windows = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
+        
+        // Determine PHP executable path
+        if ($is_windows) {
+            // XAMPP default path
+            $php_path = 'C:\\xampp\\php\\php.exe';
+            if (!file_exists($php_path)) {
+                // Try to find PHP in current path
+                $php_path = PHP_BINARY;
+            }
+        } else {
+            $php_path = PHP_BINARY;
+        }
+        
+        // Path to worker script
+        $worker_script = dirname(__FILE__) . '/video-worker.php';
+        
+        // Build command
+        if ($is_windows) {
+            $command = sprintf('"%s" "%s" %d', $php_path, $worker_script, $entry_id);
+        } else {
+            $command = sprintf('%s %s %d', escapeshellarg($php_path), escapeshellarg($worker_script), $entry_id);
+        }
+        
+        // Process descriptors
+        $descriptors = array(
+            0 => array("pipe", "r"),  // stdin
+            1 => array("pipe", "w"),  // stdout
+            2 => array("pipe", "w")   // stderr
+        );
+        
+        // Spawn process
+        $process = proc_open($command, $descriptors, $pipes, ABSPATH);
+        
+        if (is_resource($process)) {
+            // Set streams to non-blocking mode for parallel processing
+            stream_set_blocking($pipes[1], 0);
+            stream_set_blocking($pipes[2], 0);
+            
+            return array(
+                'process' => $process,
+                'pipes' => $pipes
+            );
+        }
+        
+        $this->database->add_log('video_conversion', "Failed to spawn worker for entry ID {$entry_id}");
+        return false;
     }
     
     /**
@@ -157,8 +241,10 @@ class Nitter_Video_Handler {
         
         $this->database->add_log('video_conversion', "Starting processing for entry ID: {$entry_id}");
         
-        // Mark as processing
-        $this->database->update_video_conversion_status($entry_id, 'processing');
+        // Mark as processing if not already
+        if ($entry->conversion_status !== 'processing') {
+            $this->database->update_video_conversion_status($entry_id, 'processing');
+        }
         
         $video_file = null;
         $gif_file = null;
@@ -201,12 +287,11 @@ class Nitter_Video_Handler {
             }
             
             // Step 5: Update database with ImgBB data
-            $file_size = filesize($gif_file);
             $this->database->update_gif_data(
                 $entry_id,
                 $upload_result['url'],
                 $upload_result['delete_url'],
-                $upload_result['size'], // Use actual uploaded size from ImgBB
+                $upload_result['size'],
                 $duration
             );
             
@@ -251,7 +336,7 @@ class Nitter_Video_Handler {
         $is_windows = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
         
         if ($is_windows) {
-            // On Windows, use double quotes and don't escape the executable path
+            // On Windows, use double quotes and normalize path separators
             $output_escaped = '"' . str_replace('/', '\\', $output_file) . '"';
             $url_escaped = '"' . $video_url . '"';
             $ytdlp = '"' . $this->ytdlp_path . '"';
@@ -318,79 +403,78 @@ class Nitter_Video_Handler {
     /**
      * Convert video to GIF with progressive quality reduction
      */
-private function convert_to_gif($video_file, $entry_id, $duration) {
-    $gif_file = $this->temp_folder . '/gif_' . $entry_id . '.gif';
-    
-    // Progressive quality settings
-    $quality_levels = array(
-        array('fps' => 15, 'width' => 720),
-        array('fps' => 12, 'width' => 640),
-        array('fps' => 10, 'width' => 540),
-        array('fps' => 8, 'width' => 480),
-        array('fps' => 6, 'width' => 360),
-        array('fps' => 5, 'width' => 320)
-    );
-    
-    foreach ($quality_levels as $index => $quality) {
-        $fps = $quality['fps'];
-        $width = $quality['width'];
+    private function convert_to_gif($video_file, $entry_id, $duration) {
+        $gif_file = $this->temp_folder . '/gif_' . $entry_id . '.gif';
         
-        $this->database->add_log('video_conversion', "Attempting conversion with FPS: {$fps}, Width: {$width}px");
-        
-        // Delete previous attempt if exists
-        if (file_exists($gif_file)) {
-            unlink($gif_file);
-        }
-        
-        // Build ffmpeg command with Windows compatibility
-        $is_windows = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
-        if ($is_windows) {
-            $video_escaped = '"' . str_replace('/', '\\', $video_file) . '"';
-            $gif_escaped = '"' . str_replace('/', '\\', $gif_file) . '"';
-            $ffmpeg = '"' . $this->ffmpeg_path . '"';
-        } else {
-            $video_escaped = escapeshellarg($video_file);
-            $gif_escaped = escapeshellarg($gif_file);
-            $ffmpeg = $this->ffmpeg_path;
-        }
-        
-        // Use GPU for decode/resize, CPU for GIF palette
-        $command = sprintf(
-            '%s -hwaccel cuda -i %s -vf "fps=%d,scale=%d:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3" -y %s 2>&1',
-            $ffmpeg,
-            $video_escaped,
-            $fps,
-            $width,
-            $gif_escaped
+        // Progressive quality settings
+        $quality_levels = array(
+            array('fps' => 15, 'width' => 720),
+            array('fps' => 12, 'width' => 640),
+            array('fps' => 10, 'width' => 540),
+            array('fps' => 8, 'width' => 480),
+            array('fps' => 6, 'width' => 360),
+            array('fps' => 5, 'width' => 320)
         );
         
-        exec($command, $output, $return_code);
-        
-        if ($return_code !== 0 || !file_exists($gif_file)) {
-            $this->database->add_log('video_conversion', "Conversion attempt failed");
-            continue;
+        foreach ($quality_levels as $index => $quality) {
+            $fps = $quality['fps'];
+            $width = $quality['width'];
+            
+            $this->database->add_log('video_conversion', "Attempting conversion with FPS: {$fps}, Width: {$width}px");
+            
+            // Delete previous attempt if exists
+            if (file_exists($gif_file)) {
+                unlink($gif_file);
+            }
+            
+            // Build ffmpeg command with Windows compatibility
+            $is_windows = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
+            if ($is_windows) {
+                $video_escaped = '"' . str_replace('/', '\\', $video_file) . '"';
+                $gif_escaped = '"' . str_replace('/', '\\', $gif_file) . '"';
+                $ffmpeg = '"' . $this->ffmpeg_path . '"';
+            } else {
+                $video_escaped = escapeshellarg($video_file);
+                $gif_escaped = escapeshellarg($gif_file);
+                $ffmpeg = $this->ffmpeg_path;
+            }
+            
+            // Use GPU for decode/resize, CPU for GIF palette
+            $command = sprintf(
+                '%s -hwaccel cuda -i %s -vf "fps=%d,scale=%d:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3" -y %s 2>&1',
+                $ffmpeg,
+                $video_escaped,
+                $fps,
+                $width,
+                $gif_escaped
+            );
+            
+            exec($command, $output, $return_code);
+            
+            if ($return_code !== 0 || !file_exists($gif_file)) {
+                $this->database->add_log('video_conversion', "Conversion attempt failed");
+                continue;
+            }
+            
+            $file_size = filesize($gif_file);
+            $size_mb = $file_size / (1024 * 1024);
+            
+            $this->database->add_log('video_conversion', "GIF created: " . $this->format_bytes($file_size) . " with {$fps}fps @ {$width}px");
+            
+            // Check if size is acceptable
+            if ($size_mb <= $this->max_size_mb) {
+                return $gif_file;
+            }
+            
+            $this->database->add_log('video_conversion', "GIF too large (" . round($size_mb, 2) . "MB > {$this->max_size_mb}MB), trying lower quality");
         }
         
-        $file_size = filesize($gif_file);
-        $size_mb = $file_size / (1024 * 1024);
+        // If we get here, all attempts failed
+        $this->cleanup_files($gif_file);
+        $this->database->add_log('video_conversion', "Failed to create GIF under size limit after all attempts");
         
-        $this->database->add_log('video_conversion', "GIF created: " . $this->format_bytes($file_size) . " with {$fps}fps @ {$width}px");
-        
-        // Check if size is acceptable
-        if ($size_mb <= $this->max_size_mb) {
-            return $gif_file;
-        }
-        
-        $this->database->add_log('video_conversion', "GIF too large (" . round($size_mb, 2) . "MB > {$this->max_size_mb}MB), trying lower quality");
+        return false;
     }
-    
-    // If we get here, all attempts failed
-    $this->cleanup_files($gif_file);
-    $this->database->add_log('video_conversion', "Failed to create GIF under size limit after all attempts");
-    
-    return false;
-}
-
     
     /**
      * Cleanup temporary files
@@ -443,7 +527,8 @@ private function convert_to_gif($video_file, $entry_id, $duration) {
             'settings' => array(
                 'max_duration' => $this->max_duration,
                 'max_size_mb' => $this->max_size_mb,
-                'auto_delete' => $this->auto_delete
+                'auto_delete' => $this->auto_delete,
+                'parallel_count' => $this->parallel_count
             ),
             'imgbb' => $imgbb_status
         );
