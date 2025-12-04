@@ -1,0 +1,945 @@
+const express = require('express');
+const puppeteer = require('puppeteer');
+const { exec } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const https = require('https');
+const http = require('http');
+const axios = require('axios');
+const app = express();
+
+app.use(express.json());
+
+// YOUR ORIGINAL ARTICLE SCRAPING VARIABLES - UNCHANGED
+const MEDIA_STORAGE = '/var/www/html/wp-content/uploads/twitter-scraper/accounts';
+const TEMP_STORAGE = '/tmp/twitter-media';
+
+// Create storage directories if they don't exist
+[MEDIA_STORAGE, TEMP_STORAGE].forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+});
+
+// NITTER SCRAPER VARIABLES
+let logs = [];
+const MAX_LOGS = 1000;
+
+// Helper function to add logs
+function addLog(message, level = 'info') {
+  const logEntry = {
+    timestamp: new Date().toISOString(),
+    level: level,
+    message: message
+  };
+  
+  logs.unshift(logEntry);
+  if (logs.length > MAX_LOGS) {
+    logs = logs.slice(0, MAX_LOGS);
+  }
+  
+  console.log(`[${logEntry.timestamp}] [${level.toUpperCase()}] ${message}`);
+}
+
+// Helper function to extract username from URL
+function extractUsernameFromUrl(url) {
+  const patterns = [
+    /(?:x\.com|twitter\.com)\/([a-zA-Z0-9_]+)/,
+    /(?:nitter\.[a-zA-Z0-9.-]+|xcancel\.com|lightbrd\.com|nuku\.trabun\.org)\/([a-zA-Z0-9_]+)/
+  ];
+  
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match) {
+      return match[1];
+    }
+  }
+  
+  return null;
+}
+
+// PHASE 2: Helper function to convert Nitter URL to Twitter URL
+function convertNitterUrlToTwitter(nitterUrl, instanceUrl) {
+  try {
+    const instanceDomain = new URL(instanceUrl).hostname;
+    // Remove instance domain and build Twitter URL
+    // Example: https://nitter.net/username/status/123 -> https://twitter.com/username/status/123
+    const cleanPath = nitterUrl.replace(instanceUrl, '').replace(/^\//, '');
+    const twitterUrl = `https://twitter.com/${cleanPath}`;
+    return twitterUrl;
+  } catch (e) {
+    addLog(`Failed to convert Nitter URL to Twitter: ${e.message}`, 'error');
+    return null;
+  }
+}
+
+// Enhanced helper function to download image as base64
+async function downloadImageAsBase64(imageUrl, instanceUrl = '') {
+  try {
+    addLog(`Starting download of image: ${imageUrl}`);
+    
+    const response = await axios.get(imageUrl, {
+      responseType: 'arraybuffer',
+      timeout: 30000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+        'Referer': instanceUrl
+      }
+    });
+    
+    // Check if response is actually an image
+    const contentType = response.headers['content-type'] || '';
+    addLog(`Image download - Content-Type: ${contentType} for URL: ${imageUrl}`);
+    
+    if (!contentType.startsWith('image/') && !contentType.includes('octet-stream')) {
+      addLog(`Invalid content type for image ${imageUrl}: ${contentType}`, 'error');
+      return { success: false, error: 'Not an image - Content-Type: ' + contentType };
+    }
+    
+    // Check if response contains HTML (error page)
+    const buffer = Buffer.from(response.data);
+    const bodyText = buffer.toString('utf8', 0, 200);
+    if (bodyText.includes('<html') || bodyText.includes('<!DOCTYPE') || bodyText.includes('<title>')) {
+      addLog(`Received HTML instead of image for ${imageUrl}`, 'error');
+      return { success: false, error: 'HTML response detected' };
+    }
+    
+    const extension = contentType.split('/')[1] || 'jpg';
+    
+    addLog(`Image downloaded successfully: ${imageUrl} (${buffer.length} bytes, ${contentType})`);
+    
+    return {
+      success: true,
+      data: buffer.toString('base64'),
+      mimeType: contentType,
+      size: buffer.length
+    };
+  } catch (error) {
+    addLog(`Failed to download image ${imageUrl}: ${error.message}`, 'error');
+    
+    // Enhanced fallback - try multiple alternative instances for 503 errors
+    if (error.response && error.response.status === 503) {
+        const currentDomain = new URL(imageUrl).hostname;
+        const alternativeDomains = [
+            'nitter.net',
+            'xcancel.com', 
+            'lightbrd.com',
+            'nitter.space',
+            'nitter.kareem.one'
+        ].filter(domain => domain !== currentDomain); // Exclude current failing domain
+        
+        for (const altDomain of alternativeDomains) {
+            const altUrl = imageUrl.replace(currentDomain, altDomain);
+            addLog(`Trying alternative domain for 503 error: ${altDomain}`);
+            
+            try {
+                const altResponse = await axios.get(altUrl, {
+                    responseType: 'arraybuffer',
+                    timeout: 30000,
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
+                    }
+                });
+                
+                const altContentType = altResponse.headers['content-type'] || '';
+                if (altContentType.startsWith('image/')) {
+                    const altBuffer = Buffer.from(altResponse.data);
+                    addLog(`Alternative domain successful: ${altDomain} (${altBuffer.length} bytes)`);
+                    return {
+                        success: true,
+                        data: altBuffer.toString('base64'),
+                        mimeType: altContentType,
+                        size: altBuffer.length
+                    };
+                }
+            } catch (altError) {
+                addLog(`Alternative domain ${altDomain} failed: ${altError.message}`, 'error');
+                continue;
+            }
+        }
+        
+        addLog(`All alternative domains failed for image: ${imageUrl}`, 'error');
+    }
+    
+    return { success: false, error: error.message };
+  }
+}
+
+// Helper function to send data to WordPress
+async function sendDataToWordPress(callbackUrl, data) {
+  try {
+    addLog(`Sending data to WordPress: ${callbackUrl}`);
+    addLog(`Data payload: ${data.tweets.length} tweets, account_id: ${data.account_id}`);
+    
+    const response = await axios.post(callbackUrl, data, {
+      timeout: 60000,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    addLog(`WordPress callback successful: ${response.status}`);
+    return { success: true, data: response.data };
+  } catch (error) {
+    addLog(`Failed to send data to WordPress: ${error.message}`, 'error');
+    if (error.response) {
+      addLog(`WordPress response status: ${error.response.status}`, 'error');
+      addLog(`WordPress response data: ${JSON.stringify(error.response.data)}`, 'error');
+    }
+    return { success: false, error: error.message };
+  }
+}
+
+// YOUR ORIGINAL ARTICLE SCRAPING ENDPOINT - UNCHANGED
+app.post('/scrape', async (req, res) => {
+  const { url, useProxy = false, proxyConfig = null } = req.body;
+  if (!url) return res.status(400).json({ error: 'URL is required' });
+
+  console.log(`[${new Date().toISOString()}] Scraping: ${url} ${useProxy ? '(with proxy)' : '(direct)'}`);
+
+  let browser;
+  try {
+    const launchOptions = {
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage'
+      ]
+    };
+
+    if (useProxy && proxyConfig && proxyConfig.host && proxyConfig.port) {
+      let proxyServer = `${proxyConfig.host}:${proxyConfig.port}`;
+      if (proxyConfig.user && proxyConfig.pass) {
+        proxyServer = `${proxyConfig.user}:${proxyConfig.pass}@${proxyServer}`;
+      }
+      launchOptions.args.push(`--proxy-server=socks5://${proxyServer}`);
+      console.log(`Using proxy: socks5://${proxyConfig.host}:${proxyConfig.port}`);
+    }
+
+    browser = await puppeteer.launch(launchOptions);
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+    await page.goto(url, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    const content = await page.evaluate(() => {
+      const definiteEndPatterns = [
+        'The Facebook Share button',
+        "Don't Miss Out on MCU News!",
+        'Related Articles',
+        'More from',
+        'Subscribe to',
+        'Newsletter',
+        'We want to hear from you!',
+        'This thread is open for discussion',
+        'Be the first to post your thoughts',
+        'Share your opinions in the thread below',
+        'Leave a Comment',
+        'Join the discussion'
+      ];
+
+      const contentContinuationIndicators = [
+        'is a', 'follows', 'based on', 'adaptation', 'series', 'season',
+        'Harry Potter', 'fantasy', 'magic', 'wizard', 'witch',
+        'The show', 'The series', 'The story', 'The book',
+        'fans will', 'viewers', 'audience', 'critics',
+        'much like', 'similar to', 'compared to', 'unlike'
+      ];
+
+      const allParagraphs = Array.from(document.querySelectorAll('p'))
+        .map(p => p.innerText ? p.innerText.trim() : '')
+        .filter(text => text.length > 30 &&
+          !text.toLowerCase().includes('advertisement') &&
+          !text.toLowerCase().includes('subscribe') &&
+          !text.toLowerCase().includes('follow us'));
+
+      const filteredParagraphs = [];
+      let widgetCount = 0;
+      let consecutiveWidgets = 0;
+
+      for (let i = 0; i < allParagraphs.length; i++) {
+        const paragraph = allParagraphs[i];
+
+        let shouldDefinitelyStop = false;
+        for (const pattern of definiteEndPatterns) {
+          if (paragraph.includes(pattern)) {
+            shouldDefinitelyStop = true;
+            break;
+          }
+        }
+
+        if (shouldDefinitelyStop) {
+          break;
+        }
+
+        if (paragraph.includes('Your comment has not been saved')) {
+          widgetCount++;
+          consecutiveWidgets++;
+
+          const nextParagraphs = allParagraphs.slice(i + 1, i + 6);
+          let hasSubstantialContentAhead = false;
+          let contentIndicatorCount = 0;
+
+          for (const nextPara of nextParagraphs) {
+            if (nextPara.includes('Your comment has not been saved') || nextPara.length < 50) {
+              continue;
+            }
+
+            for (const indicator of contentContinuationIndicators) {
+              if (nextPara.toLowerCase().includes(indicator.toLowerCase())) {
+                contentIndicatorCount++;
+                break;
+              }
+            }
+
+            if (nextPara.length > 100 && contentIndicatorCount > 0) {
+              hasSubstantialContentAhead = true;
+              break;
+            }
+          }
+
+          if (hasSubstantialContentAhead) {
+            consecutiveWidgets = 0;
+            continue;
+          } else if (widgetCount >= 3 && consecutiveWidgets >= 2) {
+            break;
+          } else if (widgetCount >= 5) {
+            break;
+          } else {
+            continue;
+          }
+        }
+
+        if (!paragraph.includes('Your comment has not been saved')) {
+          consecutiveWidgets = 0;
+        }
+
+        if (paragraph.length > 50) {
+          filteredParagraphs.push(paragraph);
+        }
+      }
+
+      return filteredParagraphs.join('\n\n');
+    });
+
+    await browser.close();
+
+    if (!content || content.length < 100) {
+      throw new Error('Could not extract meaningful content');
+    }
+
+    const wordCount = content.split(/\s+/).filter(word => word.length > 0).length;
+
+    console.log(`[${new Date().toISOString()}] Success: ${url} (${wordCount} words) ${useProxy ? '(proxy)' : '(direct)'}`);
+
+    res.json({
+      success: true,
+      content: content,
+      wordCount: wordCount,
+      url: url,
+      method: useProxy ? 'proxy' : 'direct'
+    });
+
+  } catch (error) {
+    if (browser) await browser.close();
+
+    console.log(`[${new Date().toISOString()}] Error: ${url} - ${error.message} ${useProxy ? '(proxy)' : '(direct)'}`);
+
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      url: url,
+      method: useProxy ? 'proxy' : 'direct'
+    });
+  }
+});
+
+// NITTER SCRAPER ENDPOINTS
+
+// Status endpoint
+app.get('/status', (req, res) => {
+  res.json({
+    success: true,
+    status: 'running',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    version: '2.0.0' // Updated to 2.0.0 for Phase 2
+  });
+});
+
+// Test instance endpoint
+app.post('/test-instance', async (req, res) => {
+  const { instance_url } = req.body;
+  
+  if (!instance_url) {
+    return res.status(400).json({
+      success: false,
+      message: 'Instance URL is required'
+    });
+  }
+  
+  addLog(`Testing instance: ${instance_url}`);
+  
+  let browser;
+  const startTime = Date.now();
+  
+  try {
+    browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage'
+      ]
+    });
+    
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+    
+    // Test with a simple page load
+    await page.goto(instance_url, {
+      waitUntil: 'domcontentloaded',
+      timeout: 15000
+    });
+    
+    const responseTime = Date.now() - startTime;
+    await browser.close();
+    
+    addLog(`Instance ${instance_url} is working (${responseTime}ms)`);
+    
+    res.json({
+      success: true,
+      message: 'Instance is working',
+      response_time: responseTime
+    });
+    
+  } catch (error) {
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (e) {}
+    }
+    
+    addLog(`Instance ${instance_url} failed: ${error.message}`, 'error');
+    
+    res.json({
+      success: false,
+      message: `Instance test failed: ${error.message}`
+    });
+  }
+});
+
+// Scrape account endpoint
+app.post('/scrape-account', async (req, res) => {
+  const { account_url, account_username, account_id, instances, callback_url } = req.body;
+  
+  if (!account_url || !account_username || !account_id || !instances || !callback_url) {
+    return res.status(400).json({
+      success: false,
+      message: 'Missing required parameters'
+    });
+  }
+  
+  addLog(`Starting scrape for account: ${account_username}`);
+  
+  // Start scraping in background
+  setTimeout(() => {
+    scrapeAccountBackground(account_url, account_username, account_id, instances, callback_url);
+  }, 100);
+  
+  res.json({
+    success: true,
+    message: 'Scraping started'
+  });
+});
+
+// PHASE 2: Background scraping function with video detection
+async function scrapeAccountBackground(accountUrl, accountUsername, accountId, instances, callbackUrl) {
+  let browser;
+  let tweetsFound = 0;
+  let imagesFound = 0;
+  let videosFound = 0;
+  
+  try {
+    addLog(`Background scraping started for: ${accountUsername}`);
+    
+    // Try each instance until one works
+    let lastError = null;
+    let success = false;
+    
+    // Randomize instances array for load balancing
+    const shuffledInstances = [...instances].sort(() => 0.5 - Math.random());
+    
+    for (const instance of shuffledInstances) {
+      try {
+        addLog(`Trying instance: ${instance}`);
+        
+        const nitterUrl = `${instance}/${accountUsername}`;
+        
+        browser = await puppeteer.launch({
+          headless: true,
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu'
+          ]
+        });
+        
+        const page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+        await page.setViewport({ width: 1280, height: 800 });
+        
+        addLog(`Navigating to: ${nitterUrl}`);
+        await page.goto(nitterUrl, {
+          waitUntil: 'networkidle2',
+          timeout: 60000
+        });
+        
+        // Wait for tweets to load
+        await page.waitForSelector('.timeline-item', { timeout: 30000 });
+        
+        addLog(`Extracting tweets from: ${instance}`);
+        
+        // PHASE 2: Modified tweet extraction to include video detection
+        const tweets = await page.evaluate((instanceUrl) => {
+          const tweetElements = Array.from(document.querySelectorAll('.timeline-item'));
+          
+          return tweetElements.map((tweet, index) => {
+            // Extract tweet text
+            const textElement = tweet.querySelector('.tweet-content');
+            const text = textElement ? textElement.innerText.trim() : '';
+            
+            // Skip empty tweets
+            if (!text || text.length < 10) return null;
+            
+            // Skip replies
+            const replyIndicator = tweet.querySelector('.replying-to');
+            if (replyIndicator) return null;
+            
+            // Skip reply-like tweets
+            if (text.startsWith('@') || 
+                text.includes('Replying to') || 
+                text.startsWith('RT @') ||
+                text.match(/^@\w+/)) {
+              return null;
+            }
+            
+            // PHASE 2: Check for videos BEFORE skipping them
+            const hasVideo = tweet.querySelector('video') ||
+                            tweet.querySelector('.attachment.video') ||
+                            tweet.querySelector('.gif-video') ||
+                            tweet.querySelector('.video-container') ||
+                            tweet.querySelector('[data-video]') ||
+                            tweet.querySelector('.media-video');
+            
+            let mediaType = 'image';
+            let videoUrl = null;
+            const images = [];
+            
+            if (hasVideo) {
+              // PHASE 2: This is a video tweet
+              mediaType = 'video';
+              
+              // Extract the tweet link
+              const tweetLinkElement = tweet.querySelector('.tweet-link, a[href*="/status/"]');
+              if (tweetLinkElement) {
+                const tweetPath = tweetLinkElement.getAttribute('href');
+                // Convert Nitter path to Twitter URL
+                // Example: /username/status/123 -> https://twitter.com/username/status/123
+                if (tweetPath) {
+                  const cleanPath = tweetPath.startsWith('/') ? tweetPath.substring(1) : tweetPath;
+                  videoUrl = `https://twitter.com/${cleanPath}`;
+                }
+              }
+              
+              // If we couldn't get the URL, try alternate method
+              if (!videoUrl) {
+                const timestampElement = tweet.querySelector('.tweet-date a');
+                if (timestampElement) {
+                  const href = timestampElement.getAttribute('href');
+                  if (href) {
+                    const cleanPath = href.startsWith('/') ? href.substring(1) : href;
+                    videoUrl = `https://twitter.com/${cleanPath}`;
+                  }
+                }
+              }
+              
+              console.log(`Video detected - URL: ${videoUrl}`);
+            } else {
+              // Extract images (existing logic)
+              const instanceDomain = window.location.hostname;
+              let imageSelectors = [];
+
+              // Use different selectors based on instance
+              if (instanceDomain.includes('nitter.net') || instanceDomain.includes('nitter.poast.org')) {
+                imageSelectors = [
+                  '.attachments .still-image img',
+                  '.attachments .attachment.image img',
+                  '.tweet-content img[src*="/pic/"]'
+                ];
+              } else if (instanceDomain.includes('xcancel.com')) {
+                imageSelectors = [
+                  '.tweet-media img',
+                  '.media-container img',
+                  'img[src*="pic"]'
+                ];
+              } else if (instanceDomain.includes('lightbrd.com') || instanceDomain.includes('nitter.space')) {
+                imageSelectors = [
+                  '.attachments img',
+                  '.media img',
+                  'img[src*="/pic/"]'
+                ];
+              } else {
+                // Default selectors for unknown instances
+                imageSelectors = [
+                  '.attachments .attachment.image img',
+                  '.attachments img',
+                  '.tweet-content img',
+                  '.still-image img',
+                  'img[src*="pic"]',
+                  '.media-container img',
+                  '.tweet-media img'
+                ];
+              }
+
+              for (const selector of imageSelectors) {
+                const imgs = Array.from(tweet.querySelectorAll(selector));
+                
+                for (const img of imgs) {
+                  let src = img.src;
+                  
+                  // Convert relative URLs to absolute
+                  if (src.startsWith('/pic')) {
+                    src = window.location.origin + src;
+                  }
+                  
+                  // Validate image URL format
+                  if (src.includes('.html') || src.includes('charset=') || src.includes('<html')) {
+                    continue;
+                  }
+                  
+                  // Check for valid image extensions
+                  const hasValidExtension = /\.(jpg|jpeg|png|gif|webp|bmp)(\?|$)/i.test(src) || 
+                                           src.includes('/pic/') || 
+                                           src.includes('pbs.twimg.com');
+                  
+                  if (!hasValidExtension) {
+                    continue;
+                  }
+                  
+                  // Filter out avatars and profile images
+                  if (src && 
+                      !src.includes('avatar') && 
+                      !src.includes('profile_images') && 
+                      !src.includes('profile_banners')) {
+                    images.push(src);
+                  }
+                }
+                
+                if (images.length > 0) break;
+              }
+            }
+            
+            // Enhanced timestamp extraction for different Nitter instances
+            let timestamp = '';
+            let tweetUrl = '';
+            let timestampElement = null;
+            let debugInfo = { method: 'none', value: '', selector: '' };
+
+            // Method 1: Try multiple timestamp selectors
+            const timestampSelectors = [
+                '.tweet-date a',
+                '.tweet-header .date a',
+                'time',
+                '[datetime]',
+                '.date a',
+                '.tweet-time a',
+                'a[href*="/status/"]'
+            ];
+
+            for (const selector of timestampSelectors) {
+                timestampElement = tweet.querySelector(selector);
+                if (timestampElement) {
+                    timestamp = timestampElement.getAttribute('title') || 
+                               timestampElement.getAttribute('datetime') || 
+                               timestampElement.textContent?.trim() || '';
+                    
+                    tweetUrl = timestampElement.getAttribute('href') || '';
+                    
+                    if (timestamp) {
+                        debugInfo = { method: 'selector', value: timestamp, selector: selector };
+                        break;
+                    }
+                }
+            }
+
+            // Method 2: If no timestamp found, try extracting from tweet URL date pattern
+            if (!timestamp && tweetUrl) {
+                const urlMatch = tweetUrl.match(/status\/(\d+)/);
+                if (urlMatch) {
+                    debugInfo = { method: 'tweet_id', value: urlMatch[1], selector: 'url' };
+                }
+            }
+
+            // Method 3: Look for any date-like text in the tweet header
+            if (!timestamp) {
+                const headerElement = tweet.querySelector('.tweet-header, .tweet-meta');
+                if (headerElement) {
+                    const headerText = headerElement.textContent;
+                    const relativeTimeMatch = headerText.match(/(\d+[smhd]|\w{3}\s+\d+)/);
+                    if (relativeTimeMatch) {
+                        timestamp = relativeTimeMatch[1];
+                        debugInfo = { method: 'header_text', value: timestamp, selector: 'header' };
+                    }
+                }
+            }
+
+            // Extract tweet ID from URL
+            let tweetId = null;
+            if (tweetUrl) {
+                const tweetIdMatch = tweetUrl.match(/status\/(\d+)/);
+                tweetId = tweetIdMatch ? tweetIdMatch[1] : null;
+            }
+
+            // Enhanced date parsing and conversion
+            let mysqlDate = new Date().toISOString().slice(0, 19).replace('T', ' ');
+
+            if (timestamp) {
+                try {
+                    let parsedDate = null;
+                    
+                    if (timestamp.match(/^\d+[smhd]$/)) {
+                        // Relative time like "2h", "1d", "30m"
+                        const value = parseInt(timestamp);
+                        const unit = timestamp.slice(-1);
+                        const now = new Date();
+                        
+                        switch(unit) {
+                            case 's': parsedDate = new Date(now.getTime() - (value * 1000)); break;
+                            case 'm': parsedDate = new Date(now.getTime() - (value * 60 * 1000)); break;
+                            case 'h': parsedDate = new Date(now.getTime() - (value * 60 * 60 * 1000)); break;
+                            case 'd': parsedDate = new Date(now.getTime() - (value * 24 * 60 * 60 * 1000)); break;
+                        }
+                    } else {
+                        parsedDate = new Date(timestamp);
+                    }
+                    
+                    if (parsedDate && !isNaN(parsedDate.getTime())) {
+                        mysqlDate = parsedDate.toISOString().slice(0, 19).replace('T', ' ');
+                    }
+                } catch (e) {
+                    // Use current time
+                }
+            }
+            
+            return {
+              tweet_id: tweetId || `tweet_${Date.now()}_${index}`,
+              tweet_text: text,
+              tweet_date: mysqlDate,
+              debug_info: debugInfo,
+              media_type: mediaType,
+              video_url: videoUrl,
+              images: images
+            };
+          }).filter(tweet => tweet !== null);
+        }, instance);
+        
+        await browser.close();
+        browser = null;
+        
+        addLog(`Found ${tweets.length} tweets from ${instance}`);
+        tweetsFound = tweets.length;
+        
+        // Count videos found
+        videosFound = tweets.filter(t => t.media_type === 'video').length;
+        addLog(`Videos detected: ${videosFound}`);
+        
+        // Log detailed instance usage
+        const instanceDomain = new URL(instance).hostname;
+        addLog(`SUCCESS: Account "${accountUsername}" scraped from instance: ${instanceDomain}`);
+        addLog(`Instance performance: ${instanceDomain} - ${tweets.length} tweets, ${tweets.reduce((sum, t) => sum + (t.images?.length || 0), 0)} images, ${videosFound} videos`);
+
+        // Log timestamp extraction results with instance info
+        for (const tweet of tweets) {
+          if (tweet.debug_info) {
+            addLog(`[${instanceDomain}] Timestamp extraction - Method: ${tweet.debug_info.method}, Selector: ${tweet.debug_info.selector}, Value: ${tweet.debug_info.value}`);
+          }
+        }
+        
+        // PHASE 2: Process both images and videos
+        const processedTweets = [];
+        
+        for (const tweet of tweets) {
+          const tweetImages = [];
+          
+          if (tweet.media_type === 'video') {
+            // PHASE 2: For videos, just pass the URL without processing
+            processedTweets.push({
+              tweet_id: tweet.tweet_id,
+              tweet_text: tweet.tweet_text,
+              tweet_date: tweet.tweet_date,
+              media_type: 'video',
+              video_url: tweet.video_url,
+              images: []
+            });
+            addLog(`Video tweet added: ${tweet.tweet_id} - URL: ${tweet.video_url}`);
+          } else {
+            // Process images as before
+            if (tweet.images && tweet.images.length > 0) {
+              addLog(`Processing ${tweet.images.length} images for tweet: ${tweet.tweet_id}`);
+              
+              for (const imageUrl of tweet.images) {
+                addLog(`Downloading image: ${imageUrl}`);
+                const imageData = await downloadImageAsBase64(imageUrl, instance);
+                
+                if (imageData.success) {
+                  tweetImages.push({
+                    url: imageUrl,
+                    data: imageData.data,
+                    mimeType: imageData.mimeType,
+                    size: imageData.size
+                  });
+                  imagesFound++;
+                  addLog(`Image downloaded successfully: ${imageUrl} (${imageData.size} bytes)`);
+                } else {
+                  addLog(`Failed to download image: ${imageUrl} - ${imageData.error}`, 'error');
+                }
+              }
+            }
+            
+            processedTweets.push({
+              tweet_id: tweet.tweet_id,
+              tweet_text: tweet.tweet_text,
+              tweet_date: tweet.tweet_date,
+              media_type: 'image',
+              images: tweetImages
+            });
+          }
+        }
+        
+        addLog(`Processed ${processedTweets.length} tweets: ${imagesFound} images, ${videosFound} videos`);
+        
+        // Send data to WordPress
+        const wpData = {
+          account_id: accountId,
+          tweets: processedTweets
+        };
+        
+        addLog(`Sending ${processedTweets.length} tweets (${imagesFound} images, ${videosFound} videos) to WordPress`);
+        
+        const wpResult = await sendDataToWordPress(callbackUrl, wpData);
+        
+        if (wpResult.success) {
+          addLog(`Successfully sent data to WordPress for: ${accountUsername}`);
+          success = true;
+          break;
+        } else {
+          throw new Error(`WordPress callback failed: ${wpResult.error}`);
+        }
+        
+      } catch (error) {
+        if (browser) {
+          try {
+            await browser.close();
+            browser = null;
+          } catch (e) {}
+        }
+        
+        const instanceDomain = new URL(instance).hostname;
+        addLog(`FAILED: Instance ${instanceDomain} failed for account "${accountUsername}": ${error.message}`, 'error');
+        addLog(`Instance failure type: ${error.name || 'Unknown'} - ${instanceDomain}`, 'error');
+        lastError = error;
+        continue;
+      }
+    }
+    
+    if (!success) {
+      throw new Error(`All instances failed. Last error: ${lastError?.message}`);
+    }
+    
+  } catch (error) {
+    addLog(`Scraping failed for ${accountUsername}: ${error.message}`, 'error');
+    
+    // Try to notify WordPress of the failure
+    try {
+      await sendDataToWordPress(callbackUrl, {
+        account_id: accountId,
+        error: error.message,
+        tweets: []
+      });
+    } catch (e) {
+      addLog(`Failed to notify WordPress of error: ${e.message}`, 'error');
+    }
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (e) {}
+    }
+    
+    addLog(`Scraping completed for ${accountUsername}: ${tweetsFound} tweets, ${imagesFound} images, ${videosFound} videos`);
+  }
+}
+
+// Get logs endpoint
+app.get('/logs', (req, res) => {
+  res.json({
+    success: true,
+    logs: logs.slice(0, 100)
+  });
+});
+
+// Health check endpoints
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    service: 'article-scraper'
+  });
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    success: true, 
+    message: 'Nitter Scraper Service is running',
+    timestamp: new Date().toISOString(),
+    version: '2.0.0', // Updated to 2.0.0 for Phase 2
+    logs_count: logs.length,
+    phase: 'Phase 2 - Video Detection'
+  });
+});
+
+// Start server
+const PORT = 3001;
+app.listen(PORT, '0.0.0.0', () => {
+  addLog(`Scraper service running on port ${PORT}`);
+  addLog('Phase 2: Video detection enabled');
+  addLog('Available endpoints:');
+  addLog('- POST /scrape (article scraping)');
+  addLog('- GET /status (service status)');
+  addLog('- POST /test-instance (test Nitter instance)');
+  addLog('- POST /scrape-account (scrape Nitter account)');
+  addLog('- GET /logs (get service logs)');
+  addLog('- GET /health (health check)');
+  addLog('- GET /api/health (API health check)');
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  addLog('Shutting down Scraper service...');
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  addLog('Shutting down Scraper service...');
+  process.exit(0);
+});

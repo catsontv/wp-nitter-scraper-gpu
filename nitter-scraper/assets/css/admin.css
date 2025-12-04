@@ -1,0 +1,495 @@
+/* Nitter Scraper Admin Styles */
+
+.nitter-admin-wrap {
+    max-width: none;
+    margin: 20px auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.nitter-admin-wrap h1 {
+    margin-bottom: 20px;
+    font-size: 24px;
+    font-weight: 600;
+}
+
+.nitter-admin-wrap h2 {
+    margin: 20px 0 15px 0;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+/* Form Styles */
+.nitter-form {
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.nitter-form-row {
+    margin-bottom: 15px;
+}
+
+.nitter-form-row label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 600;
+}
+
+.nitter-form-row input[type="text"],
+.nitter-form-row input[type="url"],
+.nitter-form-row input[type="number"],
+.nitter-form-row select {
+    width: 100%;
+    max-width: 400px;
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.nitter-form-row input[type="number"] {
+    max-width: 100px;
+}
+
+/* Simple Button Styles */
+.nitter-btn {
+    background: #0073aa;
+    color: #fff;
+    border: 1px solid #0073aa;
+    padding: 8px 12px;
+    font-size: 13px;
+    text-decoration: none;
+    display: inline-block;
+    margin-right: 5px;
+    cursor: pointer;
+}
+
+.nitter-btn:hover {
+    background: #005a87;
+}
+
+.nitter-btn-secondary {
+    background: #6c757d;
+    border-color: #6c757d;
+}
+
+.nitter-btn-danger {
+    background: #dc3545;
+    border-color: #dc3545;
+}
+
+.nitter-btn-success {
+    background: #28a745;
+    border-color: #28a745;
+}
+
+/* Table Styles */
+.nitter-table {
+    width: 100%;
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+}
+
+.nitter-table th,
+.nitter-table td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+
+.nitter-table th {
+    background: #f9f9f9;
+    font-weight: 600;
+}
+
+.nitter-table tr:hover {
+    background: #f5f5f5;
+}
+
+.nitter-table .actions {
+    white-space: nowrap;
+}
+
+.nitter-table .actions .nitter-btn {
+    padding: 5px 10px;
+    font-size: 12px;
+    margin-right: 5px;
+}
+
+/* Twitter-like Tweet Styles */
+.nitter-tweets-container {
+    background: #ffffff;
+    border: 1px solid #e1e8ed;
+    width: 600px;
+    margin: 0 auto;
+    border-radius: 0;
+}
+
+.nitter-tweet {
+    border-bottom: 1px solid #e1e8ed;
+    padding: 12px 16px;
+    display: flex;
+}
+
+.nitter-tweet:hover {
+    background-color: #f7f9fa;
+}
+
+.nitter-tweet:last-child {
+    border-bottom: none;
+}
+
+.nitter-tweet-avatar {
+    width: 48px;
+    height: 48px;
+    background: #1da1f2;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    font-size: 18px;
+    margin-right: 12px;
+    flex-shrink: 0;
+}
+
+.nitter-tweet-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.nitter-tweet-header {
+    display: flex;
+    align-items: baseline;
+    margin-bottom: 2px;
+    flex-wrap: wrap;
+}
+
+.nitter-tweet-name {
+    font-weight: 700;
+    color: #14171a;
+    margin-right: 4px;
+    font-size: 15px;
+}
+
+.nitter-tweet-username {
+    color: #657786;
+    margin-right: 4px;
+    font-size: 15px;
+}
+
+.nitter-tweet-separator {
+    color: #657786;
+    margin: 0 4px;
+}
+
+.nitter-tweet-time {
+    color: #657786;
+    font-size: 15px;
+}
+
+.nitter-tweet-text {
+    color: #14171a;
+    line-height: 1.3125;
+    margin: 2px 0 12px 0;
+    word-wrap: break-word;
+    font-size: 15px;
+    white-space: pre-wrap;
+}
+
+.nitter-tweet-media {
+    margin-top: 12px;
+}
+
+.nitter-images-container {
+    border-radius: 16px;
+    overflow: hidden;
+    max-width: 506px;
+    border: 1px solid #e1e8ed;
+}
+
+.nitter-images-grid {
+    display: grid;
+    gap: 2px;
+}
+
+.nitter-images-grid.single {
+    grid-template-columns: 1fr;
+}
+
+.nitter-images-grid.double {
+    grid-template-columns: 1fr 1fr;
+}
+
+.nitter-images-grid.triple {
+    grid-template-columns: 2fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+.nitter-images-grid.quad {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+.nitter-tweet-image {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+    cursor: pointer;
+}
+
+.nitter-tweet-image:hover {
+    opacity: 0.9;
+}
+
+.nitter-images-grid.single .nitter-tweet-image {
+    max-height: 506px;
+    min-height: 285px;
+}
+
+.nitter-images-grid.double .nitter-tweet-image {
+    height: 253px;
+}
+
+.nitter-images-grid.triple .nitter-tweet-image {
+    height: 126px;
+}
+
+.nitter-images-grid.triple .nitter-tweet-image:first-child {
+    grid-row: 1 / 3;
+    height: 253px;
+}
+
+.nitter-images-grid.quad .nitter-tweet-image {
+    height: 126px;
+}
+
+.nitter-tweet-footer {
+    margin-top: 12px;
+    color: #657786;
+    font-size: 13px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+}
+
+/* Image Modal */
+.nitter-image-modal {
+    display: none;
+    position: fixed;
+    z-index: 9999;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.9);
+    cursor: pointer;
+}
+
+.nitter-image-modal.active {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.nitter-modal-content {
+    max-width: 95%;
+    max-height: 95%;
+    object-fit: contain;
+    border-radius: 8px;
+}
+
+.nitter-modal-close {
+    position: absolute;
+    top: 20px;
+    right: 30px;
+    color: #fff;
+    font-size: 40px;
+    font-weight: bold;
+    cursor: pointer;
+    z-index: 10001;
+}
+
+.nitter-modal-nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10000;
+    width: 100%;
+    pointer-events: none;
+}
+
+.nitter-modal-nav-btn {
+    background: rgba(0, 0, 0, 0.5);
+    color: white;
+    border: none;
+    font-size: 24px;
+    padding: 10px 15px;
+    cursor: pointer;
+    border-radius: 4px;
+    position: absolute;
+    pointer-events: auto;
+}
+
+#nitter-modal-prev {
+    left: 20px;
+}
+
+#nitter-modal-next {
+    right: 20px;
+}
+
+.nitter-modal-counter {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: white;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-size: 14px;
+    z-index: 10001;
+}
+
+/* Filter Styles */
+.nitter-filters {
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    padding: 15px;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    width: 600px;
+}
+
+.nitter-filters select {
+    min-width: 200px;
+}
+
+/* Log Styles */
+.nitter-logs-container {
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    max-height: 500px;
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 12px;
+}
+
+.nitter-log-entry {
+    padding: 8px 12px;
+    border-bottom: 1px solid #eee;
+}
+
+.nitter-log-entry:last-child {
+    border-bottom: none;
+}
+
+.nitter-log-time {
+    color: #666;
+    margin-right: 10px;
+}
+
+.nitter-log-type {
+    font-weight: 600;
+    margin-right: 10px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    text-transform: uppercase;
+}
+
+.nitter-log-type.system {
+    background: #e3f2fd;
+    color: #1976d2;
+}
+
+.nitter-log-type.scraping {
+    background: #e8f5e8;
+    color: #388e3c;
+}
+
+.nitter-log-type.api {
+    background: #fff3e0;
+    color: #f57c00;
+}
+
+.nitter-log-type.media {
+    background: #f3e5f5;
+    color: #7b1fa2;
+}
+
+.nitter-log-type.account {
+    background: #e0f2f1;
+    color: #00796b;
+}
+
+.nitter-log-type.cleanup {
+    background: #ffebee;
+    color: #d32f2f;
+}
+
+/* Status Indicators */
+.nitter-status {
+    padding: 4px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.nitter-status.active {
+    background: #d4edda;
+    color: #155724;
+}
+
+.nitter-status.inactive {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+/* Messages */
+.nitter-message {
+    padding: 12px;
+    margin: 15px 0;
+    border-radius: 4px;
+}
+
+.nitter-message.success {
+    background: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+.nitter-message.error {
+    background: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+
+.nitter-message.info {
+    background: #d1ecf1;
+    color: #0c5460;
+    border: 1px solid #bee5eb;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .nitter-tweets-container {
+        width: 100%;
+    }
+    
+    .nitter-filters {
+        width: 100%;
+        flex-direction: column;
+        align-items: stretch;
+    }
+}

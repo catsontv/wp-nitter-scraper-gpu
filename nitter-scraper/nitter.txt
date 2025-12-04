@@ -1,0 +1,39 @@
+version: '3.3'
+
+services:
+  app:
+    image: epenguincom/nitter:latest
+    container_name: nitter
+    restart: always
+    depends_on:
+      - redis
+    user: "1000:1000"  # Add this line      
+    volumes:
+      - ./data/nitter:/data
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - REDIS_HOST="redis"
+
+  redis:
+    image: redis:alpine
+    container_name: redis
+    restart: always
+    volumes:
+      - ./data/redis:/data
+
+
+services:
+  app:
+    image: epenguincom/nitter:latest
+    container_name: nitter
+    restart: always
+    depends_on:
+      - redis
+    user: "1000:1000"  # Add this line
+    volumes:
+      - ./data/nitter:/data
+    ports:
+      - "127.0.0.1:49755:8080"
+    environment:
+      - REDIS_HOST="redis"
