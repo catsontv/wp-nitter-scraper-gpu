@@ -6,6 +6,7 @@ if (!defined('ABSPATH')) {
 class Nitter_Database {
     
     private $wpdb;
+    private $db_version = '1.1.0'; // Phase 1 version
     
     public function __construct() {
         global $wpdb;
@@ -29,7 +30,7 @@ class Nitter_Database {
             UNIQUE KEY account_username (account_username)
         ) $charset_collate;";
         
-        // Tweets table
+        // Tweets table - PHASE 1 ENHANCED
         $tweets_table = $this->wpdb->prefix . 'nitter_tweets';
         $tweets_sql = "CREATE TABLE $tweets_table (
             id int(11) NOT NULL AUTO_INCREMENT,
@@ -39,9 +40,16 @@ class Nitter_Database {
             tweet_date datetime NOT NULL,
             images_count int(11) NOT NULL DEFAULT 0,
             date_scraped datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            feed_status enum('published','pending') NOT NULL DEFAULT 'published',
+            date_published datetime NULL,
+            in_feed tinyint(1) NOT NULL DEFAULT 0,
+            last_feed_check datetime NULL,
             PRIMARY KEY (id),
             UNIQUE KEY tweet_id (tweet_id),
-            KEY account_id (account_id)
+            KEY account_id (account_id),
+            KEY feed_status (feed_status),
+            KEY date_published (date_published),
+            KEY in_feed (in_feed)
         ) $charset_collate;";
         
         // Images table (extended for video/GIF support)
@@ -90,7 +98,7 @@ class Nitter_Database {
             KEY date_created (date_created)
         ) $charset_collate;";
         
-        // Settings table (new for Phase 1)
+        // Settings table
         $settings_table = $this->wpdb->prefix . 'nitter_settings';
         $settings_sql = "CREATE TABLE $settings_table (
             id int(11) NOT NULL AUTO_INCREMENT,
@@ -108,11 +116,80 @@ class Nitter_Database {
         dbDelta($logs_sql);
         dbDelta($settings_sql);
         
+        // Run Phase 1 migrations
+        $this->run_phase1_migrations();
+        
         // Insert default instances
         $this->insert_default_instances();
         
         // Insert default settings
         $this->insert_default_settings();
+    }
+    
+    /**
+     * PHASE 1: Run database migrations
+     */
+    private function run_phase1_migrations() {
+        $tweets_table = $this->wpdb->prefix . 'nitter_tweets';
+        
+        // Check if columns already exist
+        $columns = $this->wpdb->get_results("SHOW COLUMNS FROM $tweets_table");
+        $column_names = array();
+        foreach ($columns as $column) {
+            $column_names[] = $column->Field;
+        }
+        
+        // Add feed_status column if it doesn't exist
+        if (!in_array('feed_status', $column_names)) {
+            $this->wpdb->query("ALTER TABLE $tweets_table ADD COLUMN feed_status enum('published','pending') NOT NULL DEFAULT 'published' AFTER date_scraped");
+            $this->add_log('system', 'Phase 1: Added feed_status column');
+        }
+        
+        // Add date_published column if it doesn't exist
+        if (!in_array('date_published', $column_names)) {
+            $this->wpdb->query("ALTER TABLE $tweets_table ADD COLUMN date_published datetime NULL AFTER feed_status");
+            $this->add_log('system', 'Phase 1: Added date_published column');
+        }
+        
+        // Add in_feed column if it doesn't exist
+        if (!in_array('in_feed', $column_names)) {
+            $this->wpdb->query("ALTER TABLE $tweets_table ADD COLUMN in_feed tinyint(1) NOT NULL DEFAULT 0 AFTER date_published");
+            $this->add_log('system', 'Phase 1: Added in_feed column');
+        }
+        
+        // Add last_feed_check column if it doesn't exist
+        if (!in_array('last_feed_check', $column_names)) {
+            $this->wpdb->query("ALTER TABLE $tweets_table ADD COLUMN last_feed_check datetime NULL AFTER in_feed");
+            $this->add_log('system', 'Phase 1: Added last_feed_check column');
+        }
+        
+        // Backfill date_published for existing tweets with feed_status = 'published'
+        $backfill_count = $this->wpdb->query(
+            "UPDATE $tweets_table SET date_published = date_scraped WHERE date_published IS NULL AND feed_status = 'published'"
+        );
+        
+        if ($backfill_count > 0) {
+            $this->add_log('system', "Phase 1: Backfilled date_published for $backfill_count existing tweets");
+        }
+        
+        // Add indexes for performance
+        $indexes = $this->wpdb->get_results("SHOW INDEX FROM $tweets_table");
+        $index_names = array();
+        foreach ($indexes as $index) {
+            $index_names[] = $index->Key_name;
+        }
+        
+        if (!in_array('feed_status', $index_names)) {
+            $this->wpdb->query("ALTER TABLE $tweets_table ADD INDEX feed_status (feed_status)");
+        }
+        
+        if (!in_array('date_published', $index_names)) {
+            $this->wpdb->query("ALTER TABLE $tweets_table ADD INDEX date_published (date_published)");
+        }
+        
+        if (!in_array('in_feed', $index_names)) {
+            $this->wpdb->query("ALTER TABLE $tweets_table ADD INDEX in_feed (in_feed)");
+        }
     }
     
     private function insert_default_instances() {
@@ -129,14 +206,12 @@ class Nitter_Database {
         
         $instances_table = $this->wpdb->prefix . 'nitter_instances';
         
-        // Check if table exists
         $table_exists = $this->wpdb->get_var("SHOW TABLES LIKE '$instances_table'") === $instances_table;
         if (!$table_exists) {
             return;
         }
         
         foreach ($default_instances as $instance) {
-            // Use INSERT IGNORE to avoid errors on duplicate keys
             $this->wpdb->query($this->wpdb->prepare(
                 "INSERT IGNORE INTO $instances_table (instance_url, is_active) VALUES (%s, 1)",
                 $instance
@@ -147,26 +222,24 @@ class Nitter_Database {
     private function insert_default_settings() {
         $default_settings = array(
             'enable_video_scraping' => '0',
-            'ytdlp_path' => '/usr/local/bin/yt-dlp',
-            'ffmpeg_path' => '/usr/bin/ffmpeg',
-            'ffprobe_path' => '/usr/bin/ffprobe',
+            'ytdlp_path' => 'C:\\Users\\destro\\bin\\yt-dlp.exe',
+            'ffmpeg_path' => 'C:\\Users\\destro\\bin\\ffmpeg.exe',
+            'ffprobe_path' => 'C:\\Users\\destro\\bin\\ffprobe.exe',
             'max_video_duration' => '90',
             'max_gif_size_mb' => '20',
             'imgbb_api_key' => '',
             'auto_delete_local_files' => '1',
-            'temp_folder_path' => 'wp-content/uploads/nitter-temp',
-            'parallel_video_count' => '5'  // NEW: Number of videos to process in parallel
+            'temp_folder_path' => 'C:\\xampp\\htdocs\\wp-content\\uploads\\nitter-temp',
+            'parallel_video_count' => '5'
         );
         
         $settings_table = $this->wpdb->prefix . 'nitter_settings';
         
-        // Check if table exists
         $table_exists = $this->wpdb->get_var("SHOW TABLES LIKE '$settings_table'") === $settings_table;
         if (!$table_exists) {
             return;
         }
         
-        // Use direct SQL with INSERT IGNORE to avoid recursion and duplicates
         foreach ($default_settings as $key => $value) {
             $this->wpdb->query($this->wpdb->prepare(
                 "INSERT IGNORE INTO $settings_table (setting_key, setting_value) VALUES (%s, %s)",
@@ -176,11 +249,10 @@ class Nitter_Database {
         }
     }
     
-    // Settings methods (new for Phase 1)
+    // Settings methods
     public function get_setting($key, $default = null) {
         $table = $this->wpdb->prefix . 'nitter_settings';
         
-        // Check if table exists first
         $table_exists = $this->wpdb->get_var("SHOW TABLES LIKE '$table'") === $table;
         if (!$table_exists) {
             return $default;
@@ -197,7 +269,6 @@ class Nitter_Database {
     public function update_setting($key, $value, $log = true) {
         $table = $this->wpdb->prefix . 'nitter_settings';
         
-        // Check if table exists first
         $table_exists = $this->wpdb->get_var("SHOW TABLES LIKE '$table'") === $table;
         if (!$table_exists) {
             return false;
@@ -227,7 +298,6 @@ class Nitter_Database {
             );
         }
         
-        // Only log if explicitly requested and if we're not in setup mode
         if ($result !== false && $log) {
             $this->add_log('settings', "Setting updated: $key");
         }
@@ -238,7 +308,6 @@ class Nitter_Database {
     public function get_all_settings() {
         $table = $this->wpdb->prefix . 'nitter_settings';
         
-        // Check if table exists first
         $table_exists = $this->wpdb->get_var("SHOW TABLES LIKE '$table'") === $table;
         if (!$table_exists) {
             return array();
@@ -303,7 +372,6 @@ class Nitter_Database {
         $account = $this->get_account($id);
         if (!$account) return false;
         
-        // Delete associated tweets and images
         $this->delete_account_data($id);
         
         $table = $this->wpdb->prefix . 'nitter_accounts';
@@ -327,37 +395,107 @@ class Nitter_Database {
         );
     }
     
-    // Tweet methods
-    public function add_tweet($account_id, $tweet_id, $tweet_text, $tweet_date, $images_count = 0) {
+    // PHASE 1: Tweet methods with feed status support
+    public function add_tweet($account_id, $tweet_id, $tweet_text, $tweet_date, $images_count = 0, $feed_status = 'published') {
         $table = $this->wpdb->prefix . 'nitter_tweets';
+        
+        $data = array(
+            'account_id' => $account_id,
+            'tweet_id' => $tweet_id,
+            'tweet_text' => $tweet_text,
+            'tweet_date' => $tweet_date,
+            'images_count' => $images_count,
+            'feed_status' => $feed_status
+        );
+        
+        // If publishing immediately, set date_published
+        if ($feed_status === 'published') {
+            $data['date_published'] = current_time('mysql');
+        }
         
         return $this->wpdb->insert(
             $table,
-            array(
-                'account_id' => $account_id,
-                'tweet_id' => $tweet_id,
-                'tweet_text' => $tweet_text,
-                'tweet_date' => $tweet_date,
-                'images_count' => $images_count
-            ),
-            array('%d', '%s', '%s', '%s', '%d')
+            $data,
+            array('%d', '%s', '%s', '%s', '%d', '%s', '%s')
         );
     }
     
+    /**
+     * PHASE 1: Publish a tweet (mark as published and set date_published)
+     */
+    public function publish_tweet($tweet_id) {
+        $table = $this->wpdb->prefix . 'nitter_tweets';
+        
+        $result = $this->wpdb->update(
+            $table,
+            array(
+                'feed_status' => 'published',
+                'date_published' => current_time('mysql')
+            ),
+            array('id' => $tweet_id),
+            array('%s', '%s'),
+            array('%d')
+        );
+        
+        if ($result) {
+            $this->add_log('feed', "Tweet published to feed: ID $tweet_id");
+        }
+        
+        return $result;
+    }
+    
+    /**
+     * PHASE 1: Mark tweets as shown in feed
+     */
+    public function mark_tweets_in_feed($tweet_ids) {
+        if (empty($tweet_ids)) {
+            return false;
+        }
+        
+        $table = $this->wpdb->prefix . 'nitter_tweets';
+        $ids_placeholder = implode(',', array_fill(0, count($tweet_ids), '%d'));
+        
+        $sql = "UPDATE $table SET in_feed = 1, last_feed_check = NOW() WHERE id IN ($ids_placeholder)";
+        
+        return $this->wpdb->query($this->wpdb->prepare($sql, $tweet_ids));
+    }
+    
+    /**
+     * PHASE 1: Get orphaned tweets (published but never appeared in feed)
+     */
+    public function get_orphaned_tweets($hours = 12) {
+        $table = $this->wpdb->prefix . 'nitter_tweets';
+        
+        $cutoff = date('Y-m-d H:i:s', strtotime("-$hours hours"));
+        
+        return $this->wpdb->get_results($this->wpdb->prepare(
+            "SELECT * FROM $table 
+             WHERE feed_status = 'published' 
+             AND date_scraped >= %s 
+             AND in_feed = 0",
+            $cutoff
+        ));
+    }
+    
+    /**
+     * PHASE 1: Get tweets with updated query (feed_status filter, date_published ordering)
+     */
     public function get_tweets($account_id = null, $limit = 50, $offset = 0) {
         $tweets_table = $this->wpdb->prefix . 'nitter_tweets';
         $accounts_table = $this->wpdb->prefix . 'nitter_accounts';
         
-        $where = '';
+        $where = "WHERE t.feed_status = 'published'";
+        
         if ($account_id) {
-            $where = $this->wpdb->prepare(" WHERE t.account_id = %d", $account_id);
+            $where .= $this->wpdb->prepare(" AND t.account_id = %d", $account_id);
         }
         
+        // Order by date_published (with fallback to date_scraped for migration period)
         $sql = "SELECT t.*, a.account_username 
                 FROM $tweets_table t 
                 LEFT JOIN $accounts_table a ON t.account_id = a.id 
                 $where 
-                ORDER BY t.tweet_date DESC 
+                ORDER BY COALESCE(t.date_published, t.date_scraped) DESC 
                 LIMIT %d OFFSET %d";
         
         return $this->wpdb->get_results($this->wpdb->prepare($sql, $limit, $offset));
@@ -371,7 +509,6 @@ class Nitter_Database {
         ));
     }
     
-    // Image methods (extended for video/GIF support)
     public function add_image($tweet_id, $image_url, $attachment_id = null) {
         $table = $this->wpdb->prefix . 'nitter_images';
         
@@ -407,7 +544,6 @@ class Nitter_Database {
     public function update_video_conversion_status($id, $status, $error_message = null) {
         $table = $this->wpdb->prefix . 'nitter_images';
         
-        // Use raw query to increment attempts
         $sql = $this->wpdb->prepare(
             "UPDATE $table SET conversion_status = %s, conversion_attempts = conversion_attempts + 1 WHERE id = %d",
             $status,
@@ -451,7 +587,6 @@ class Nitter_Database {
         ));
     }
     
-    // Instance methods
     public function get_active_instances() {
         $table = $this->wpdb->prefix . 'nitter_instances';
         return $this->wpdb->get_results("SELECT * FROM $table WHERE is_active = 1 ORDER BY last_used ASC");
@@ -471,11 +606,9 @@ class Nitter_Database {
         );
     }
     
-    // Log methods
     public function add_log($type, $message) {
         $table = $this->wpdb->prefix . 'nitter_logs';
         
-        // Check if table exists first to prevent errors during activation
         $table_exists = $this->wpdb->get_var("SHOW TABLES LIKE '$table'") === $table;
         if (!$table_exists) {
             return false;
@@ -520,18 +653,15 @@ class Nitter_Database {
         ));
     }
     
-    // Cleanup methods
     public function delete_account_data($account_id) {
         $tweets_table = $this->wpdb->prefix . 'nitter_tweets';
         $images_table = $this->wpdb->prefix . 'nitter_images';
         
-        // Get all tweets for this account
         $tweets = $this->wpdb->get_results($this->wpdb->prepare(
             "SELECT id FROM $tweets_table WHERE account_id = %d",
             $account_id
         ));
         
-        // Delete images for each tweet
         if ($tweets) {
             foreach ($tweets as $tweet) {
                 $images = $this->get_tweet_images($tweet->id);
@@ -547,7 +677,6 @@ class Nitter_Database {
             }
         }
         
-        // Delete tweets
         $this->wpdb->delete($tweets_table, array('account_id' => $account_id), array('%d'));
     }
     
@@ -564,14 +693,12 @@ class Nitter_Database {
             $tweets_table = $this->wpdb->prefix . 'nitter_tweets';
             $images_table = $this->wpdb->prefix . 'nitter_images';
             
-            // Get old tweets
             $old_tweets = $this->wpdb->get_results($this->wpdb->prepare(
                 "SELECT id FROM $tweets_table WHERE account_id = %d AND tweet_date < %s",
                 $account->id,
                 $cutoff_date
             ));
             
-            // Delete images for old tweets
             if ($old_tweets) {
                 foreach ($old_tweets as $tweet) {
                     $images = $this->get_tweet_images($tweet->id);
@@ -587,7 +714,6 @@ class Nitter_Database {
                 }
             }
             
-            // Delete old tweets
             $deleted_count = $this->wpdb->query($this->wpdb->prepare(
                 "DELETE FROM $tweets_table WHERE account_id = %d AND tweet_date < %s",
                 $account->id,
@@ -604,7 +730,6 @@ class Nitter_Database {
         $tweets_table = $this->wpdb->prefix . 'nitter_tweets';
         $images_table = $this->wpdb->prefix . 'nitter_images';
         
-        // Delete all WordPress attachments
         $images = $this->wpdb->get_results("SELECT wordpress_attachment_id FROM $images_table WHERE wordpress_attachment_id IS NOT NULL");
         if ($images) {
             foreach ($images as $image) {
@@ -612,7 +737,6 @@ class Nitter_Database {
             }
         }
         
-        // Truncate tables
         $this->wpdb->query("TRUNCATE TABLE $images_table");
         $this->wpdb->query("TRUNCATE TABLE $tweets_table");
         
@@ -624,5 +748,4 @@ class Nitter_Database {
     public function get_last_insert_id() {
         return $this->wpdb->insert_id;
     }
-
 }
