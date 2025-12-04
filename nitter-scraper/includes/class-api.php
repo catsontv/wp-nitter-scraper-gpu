@@ -105,7 +105,7 @@ class Nitter_API {
         $this->database->add_log('scraping', 'Starting scrape for account: ' . $account->account_username);
         
         $response = wp_remote_post($this->node_service_url . '/scrape-account', array(
-            'timeout' => 300, // 5 minutes timeout for scraping
+            'timeout' => 300,
             'headers' => array(
                 'Content-Type' => 'application/json'
             ),
@@ -151,7 +151,9 @@ class Nitter_API {
     }
     
     /**
-     * PHASE 2: Enhanced receive_scraped_data to handle both images and videos
+     * PHASE 1+2: receive_scraped_data now sets feed_status based on media
+     * - Image-only tweets: feed_status = 'published' (immediate)
+     * - Video tweets: feed_status = 'pending' until GIF conversion completes
      */
     public function receive_scraped_data($data) {
         if (!isset($data['account_id']) || !isset($data['tweets'])) {
@@ -190,7 +192,6 @@ class Nitter_API {
                 continue;
             }
             
-            // PHASE 2: Determine media type and count
             $media_type = isset($tweet_data['media_type']) ? $tweet_data['media_type'] : 'image';
             $is_video = $media_type === 'video';
             
@@ -201,37 +202,43 @@ class Nitter_API {
                 $media_count = isset($tweet_data['images']) ? count($tweet_data['images']) : 0;
             }
             
-            // Add tweet to database
+            // Decide feed_status at creation time
+            // - Image tweets: published immediately
+            // - Video tweets: pending until GIF ready
+            $feed_status = 'published';
+            if ($is_video && $media_count > 0 && $video_scraping_enabled) {
+                $feed_status = 'pending';
+            }
+            
+            // Add tweet to database with Phase 1 fields
             $tweet_result = $this->database->add_tweet(
                 $account_id,
                 $tweet_data['tweet_id'],
                 $tweet_data['tweet_text'],
                 $tweet_data['tweet_date'],
-                $media_count
+                $media_count,
+                $feed_status
             );
             
             if ($tweet_result) {
                 $tweets_added++;
                 $tweet_db_id = $this->database->get_last_insert_id();
                 
-                // PHASE 2: Handle videos
                 if ($is_video && isset($tweet_data['video_url']) && !empty($tweet_data['video_url'])) {
                     if ($video_scraping_enabled) {
-                        // Add video entry with pending status
                         $video_result = $this->database->add_video_entry($tweet_db_id, $tweet_data['video_url']);
                         
                         if ($video_result) {
                             $videos_added++;
                             $this->database->add_log('video', "Video entry added (pending): Tweet ID {$tweet_data['tweet_id']}, URL: {$tweet_data['video_url']}");
                         } else {
-                            $this->database->add_log('video', "Failed to add video entry for Tweet ID {$tweet_data['tweet_id']}", 'error');
+                            $this->database->add_log('video', "Failed to add video entry for Tweet ID {$tweet_data['tweet_id']}");
                         }
                     } else {
                         $this->database->add_log('video', "Video skipped (video scraping disabled): Tweet ID {$tweet_data['tweet_id']}");
                     }
-                }
-                // Handle images if present (existing logic)
-                elseif (isset($tweet_data['images']) && is_array($tweet_data['images'])) {
+                } elseif (isset($tweet_data['images']) && is_array($tweet_data['images'])) {
+                    // Image tweets: upload to media library immediately
                     foreach ($tweet_data['images'] as $image_data) {
                         $attachment_id = $media_handler->save_image_to_media_library($image_data);
                         
@@ -251,7 +258,6 @@ class Nitter_API {
         $account = $this->database->get_account($account_id);
         $account_name = $account ? $account->account_username : 'Unknown';
         
-        // PHASE 2: Enhanced logging with video count
         if ($videos_added > 0) {
             $this->database->add_log('scraping', "Scraping completed for $account_name: $tweets_added tweets, $images_added images, $videos_added videos (pending conversion)");
         } else {
@@ -300,7 +306,6 @@ class Nitter_API {
     }
     
     public function extract_username_from_url($url) {
-        // Handle both x.com and nitter instance URLs
         $patterns = array(
             '/(?:x\.com|twitter\.com)\/([a-zA-Z0-9_]+)/',
             '/(?:nitter\.[a-zA-Z0-9.-]+|xcancel\.com|lightbrd\.com|nuku\.trabun\.org)\/([a-zA-Z0-9_]+)/'
@@ -330,7 +335,6 @@ class Nitter_API {
             return null;
         }
         
-        // Get least recently used instance
         return $instances[0];
     }
 }

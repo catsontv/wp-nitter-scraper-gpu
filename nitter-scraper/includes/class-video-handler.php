@@ -23,7 +23,7 @@ class Nitter_Video_Handler {
     private $max_size_mb;
     private $temp_folder;
     private $auto_delete;
-    private $parallel_count; // NEW: Number of videos to process in parallel
+    private $parallel_count; // Number of videos to process in parallel
     
     public function __construct() {
         $this->database = nitter_get_database();
@@ -32,32 +32,19 @@ class Nitter_Video_Handler {
         $this->ensure_temp_folder();
     }
     
-    /**
-     * Load settings from database
-     */
     private function load_settings() {
-        $this->ytdlp_path = $this->database->get_setting('ytdlp_path', '/usr/local/bin/yt-dlp');
-        $this->ffmpeg_path = $this->database->get_setting('ffmpeg_path', '/usr/bin/ffmpeg');
-        $this->ffprobe_path = $this->database->get_setting('ffprobe_path', '/usr/bin/ffprobe');
+        $this->ytdlp_path = $this->database->get_setting('ytdlp_path', 'C:\\Users\\destro\\bin\\yt-dlp.exe');
+        $this->ffmpeg_path = $this->database->get_setting('ffmpeg_path', 'C:\\Users\\destro\\bin\\ffmpeg.exe');
+        $this->ffprobe_path = $this->database->get_setting('ffprobe_path', 'C:\\Users\\destro\\bin\\ffprobe.exe');
         $this->max_duration = intval($this->database->get_setting('max_video_duration', 90));
         $this->max_size_mb = intval($this->database->get_setting('max_gif_size_mb', 20));
         $this->auto_delete = boolval($this->database->get_setting('auto_delete_local_files', 1));
-        $this->parallel_count = intval($this->database->get_setting('parallel_video_count', 5)); // NEW
+        $this->parallel_count = intval($this->database->get_setting('parallel_video_count', 5));
         
-        // Get temp folder path
-        $temp_path = $this->database->get_setting('temp_folder_path', 'wp-content/uploads/nitter-temp');
-        
-        // Convert relative path to absolute
-        if (strpos($temp_path, '/') !== 0 && strpos($temp_path, 'C:') !== 0) {
-            $this->temp_folder = ABSPATH . $temp_path;
-        } else {
-            $this->temp_folder = $temp_path;
-        }
+        $temp_path = $this->database->get_setting('temp_folder_path', 'C:\\xampp\\htdocs\\wp-content\\uploads\\nitter-temp');
+        $this->temp_folder = $temp_path;
     }
     
-    /**
-     * Ensure temp folder exists
-     */
     private function ensure_temp_folder() {
         if (!file_exists($this->temp_folder)) {
             wp_mkdir_p($this->temp_folder);
@@ -65,18 +52,13 @@ class Nitter_Video_Handler {
         }
     }
     
-    /**
-     * Check if video processing is properly configured
-     */
     public function is_configured() {
         $errors = array();
         
-        // Check if exec() is enabled
         if (!function_exists('exec')) {
             $errors[] = 'exec() function is disabled';
         }
         
-        // Check executables
         if (!file_exists($this->ytdlp_path)) {
             $errors[] = "yt-dlp not found at: {$this->ytdlp_path}";
         }
@@ -89,12 +71,10 @@ class Nitter_Video_Handler {
             $errors[] = "ffprobe not found at: {$this->ffprobe_path}";
         }
         
-        // Check temp folder
         if (!is_writable($this->temp_folder)) {
             $errors[] = "Temp folder not writable: {$this->temp_folder}";
         }
         
-        // Check ImgBB configuration
         if (!$this->imgbb_client->is_configured()) {
             $errors[] = 'ImgBB API key not configured';
         }
@@ -107,39 +87,30 @@ class Nitter_Video_Handler {
         return true;
     }
     
-    /**
-     * Process pending videos in batch (called by cron or manual trigger)
-     * Windows-compatible parallel processing using proc_open
-     */
     public function process_pending_batch() {
-        // Check if video processing is enabled
         $enabled = $this->database->get_setting('enable_video_scraping', '0');
         if ($enabled !== '1') {
             return;
         }
         
-        // Check configuration
         if (!$this->is_configured()) {
             $this->database->add_log('video_conversion', 'Cron: Video processing skipped - not properly configured');
             return;
         }
         
-        // Get pending videos based on parallel_count setting
         $pending = $this->database->get_pending_videos($this->parallel_count);
         
         if (empty($pending)) {
-            return; // Nothing to process
+            return;
         }
         
         $count = count($pending);
         $this->database->add_log('video_conversion', "Starting parallel processing of {$count} videos...");
         
-        // Spawn parallel processes for each video
         $processes = array();
         $pipes_array = array();
         
         foreach ($pending as $entry) {
-            // Mark as processing immediately to prevent duplicate processing
             $this->database->update_video_conversion_status($entry->id, 'processing');
             
             $process_info = $this->spawn_video_worker($entry->id);
@@ -150,23 +121,18 @@ class Nitter_Video_Handler {
             }
         }
         
-        // Wait for all processes to complete
         $this->database->add_log('video_conversion', "Waiting for {$count} parallel workers to complete...");
         
         foreach ($processes as $idx => $process) {
-            // Read output from process
             $stdout = stream_get_contents($pipes_array[$idx][1]);
             $stderr = stream_get_contents($pipes_array[$idx][2]);
             
-            // Close pipes
             fclose($pipes_array[$idx][0]);
             fclose($pipes_array[$idx][1]);
             fclose($pipes_array[$idx][2]);
             
-            // Wait for process to finish and get exit code
             $exit_code = proc_close($process);
             
-            // Log any output
             if (!empty($stdout)) {
                 $this->database->add_log('video_conversion', "Worker #{$idx} output: {$stdout}");
             }
@@ -178,46 +144,35 @@ class Nitter_Video_Handler {
         $this->database->add_log('video_conversion', 'Parallel batch processing COMPLETED');
     }
     
-    /**
-     * Spawn a separate PHP process to handle one video (Windows compatible)
-     */
     private function spawn_video_worker($entry_id) {
         $is_windows = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
         
-        // Determine PHP executable path
         if ($is_windows) {
-            // XAMPP default path
             $php_path = 'C:\\xampp\\php\\php.exe';
             if (!file_exists($php_path)) {
-                // Try to find PHP in current path
                 $php_path = PHP_BINARY;
             }
         } else {
             $php_path = PHP_BINARY;
         }
         
-        // Path to worker script
         $worker_script = dirname(__FILE__) . '/video-worker.php';
         
-        // Build command
         if ($is_windows) {
             $command = sprintf('"%s" "%s" %d', $php_path, $worker_script, $entry_id);
         } else {
             $command = sprintf('%s %s %d', escapeshellarg($php_path), escapeshellarg($worker_script), $entry_id);
         }
         
-        // Process descriptors
         $descriptors = array(
-            0 => array("pipe", "r"),  // stdin
-            1 => array("pipe", "w"),  // stdout
-            2 => array("pipe", "w")   // stderr
+            0 => array("pipe", "r"),
+            1 => array("pipe", "w"),
+            2 => array("pipe", "w")
         );
         
-        // Spawn process
         $process = proc_open($command, $descriptors, $pipes, ABSPATH);
         
         if (is_resource($process)) {
-            // Set streams to non-blocking mode for parallel processing
             stream_set_blocking($pipes[1], 0);
             stream_set_blocking($pipes[2], 0);
             
@@ -231,17 +186,12 @@ class Nitter_Video_Handler {
         return false;
     }
     
-    /**
-     * Process a single video entry
-     * Complete pipeline: download → check duration → convert → upload to ImgBB → cleanup
-     */
     public function process_video($entry) {
         $entry_id = $entry->id;
         $video_url = $entry->original_video_url;
         
         $this->database->add_log('video_conversion', "Starting processing for entry ID: {$entry_id}");
         
-        // Mark as processing if not already
         if ($entry->conversion_status !== 'processing') {
             $this->database->update_video_conversion_status($entry_id, 'processing');
         }
@@ -250,13 +200,11 @@ class Nitter_Video_Handler {
         $gif_file = null;
         
         try {
-            // Step 1: Download video
             $video_file = $this->download_video($video_url, $entry_id);
             if (!$video_file) {
                 throw new Exception('Failed to download video');
             }
             
-            // Step 2: Check duration
             $duration = $this->get_video_duration($video_file);
             if ($duration === false) {
                 throw new Exception('Failed to get video duration');
@@ -265,20 +213,18 @@ class Nitter_Video_Handler {
             if ($duration > $this->max_duration) {
                 $this->cleanup_files($video_file);
                 $this->database->update_video_conversion_status(
-                    $entry_id, 
-                    'skipped', 
+                    $entry_id,
+                    'skipped',
                     "Video too long: {$duration}s (max: {$this->max_duration}s)"
                 );
                 return array('status' => 'skipped', 'reason' => 'duration');
             }
             
-            // Step 3: Convert to GIF
             $gif_file = $this->convert_to_gif($video_file, $entry_id, $duration);
             if (!$gif_file) {
                 throw new Exception('Failed to convert video to GIF');
             }
             
-            // Step 4: Upload to ImgBB
             $gif_name = "nitter_gif_{$entry_id}";
             $upload_result = $this->imgbb_client->upload_file($gif_file, $gif_name);
             
@@ -286,7 +232,6 @@ class Nitter_Video_Handler {
                 throw new Exception('ImgBB upload failed: ' . $upload_result['error']);
             }
             
-            // Step 5: Update database with ImgBB data
             $this->database->update_gif_data(
                 $entry_id,
                 $upload_result['url'],
@@ -295,12 +240,31 @@ class Nitter_Video_Handler {
                 $duration
             );
             
+            // PHASE 1: publish the parent tweet now that GIF is ready
+            global $wpdb;
+            $images_table = $wpdb->prefix . 'nitter_images';
+            $tweets_table = $wpdb->prefix . 'nitter_tweets';
+            
+            $tweet_id = $wpdb->get_var($wpdb->prepare(
+                "SELECT tweet_id FROM $images_table WHERE id = %d",
+                $entry_id
+            ));
+            
+            if ($tweet_id) {
+                $parent_tweet_id = $wpdb->get_var($wpdb->prepare(
+                    "SELECT id FROM $tweets_table WHERE id = %d",
+                    $tweet_id
+                ));
+                if ($parent_tweet_id) {
+                    $this->database->publish_tweet($parent_tweet_id);
+                }
+            }
+            
             $size_mb = round($upload_result['size'] / (1024 * 1024), 2);
-            $this->database->add_log('video_conversion', 
+            $this->database->add_log('video_conversion',
                 "Successfully processed entry ID: {$entry_id} | URL: {$upload_result['url']} | Size: {$size_mb}MB | Duration: {$duration}s"
             );
             
-            // Step 6: Cleanup local files
             if ($this->auto_delete) {
                 $this->cleanup_files($video_file, $gif_file);
                 $this->database->add_log('video_conversion', "Cleaned up local files for entry ID: {$entry_id}");
@@ -315,7 +279,6 @@ class Nitter_Video_Handler {
             );
             
         } catch (Exception $e) {
-            // Cleanup on failure
             if ($video_file) $this->cleanup_files($video_file);
             if ($gif_file) $this->cleanup_files($gif_file);
             
@@ -326,28 +289,21 @@ class Nitter_Video_Handler {
         }
     }
     
-    /**
-     * Download video using yt-dlp
-     */
     private function download_video($video_url, $entry_id) {
         $output_file = $this->temp_folder . '/video_' . $entry_id . '.mp4';
         
-        // Windows-compatible path handling
         $is_windows = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
         
         if ($is_windows) {
-            // On Windows, use double quotes and normalize path separators
             $output_escaped = '"' . str_replace('/', '\\', $output_file) . '"';
             $url_escaped = '"' . $video_url . '"';
             $ytdlp = '"' . $this->ytdlp_path . '"';
         } else {
-            // Linux/Unix escaping
             $url_escaped = escapeshellarg($video_url);
             $output_escaped = escapeshellarg($output_file);
             $ytdlp = $this->ytdlp_path;
         }
         
-        // Build yt-dlp command
         $command = sprintf(
             '%s -f "best[ext=mp4]/best" --no-playlist -o %s %s 2>&1',
             $ytdlp,
@@ -371,9 +327,6 @@ class Nitter_Video_Handler {
         return $output_file;
     }
     
-    /**
-     * Get video duration using ffprobe
-     */
     private function get_video_duration($video_file) {
         $is_windows = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
         
@@ -400,13 +353,9 @@ class Nitter_Video_Handler {
         return intval(floatval($output[0]));
     }
     
-    /**
-     * Convert video to GIF with progressive quality reduction
-     */
     private function convert_to_gif($video_file, $entry_id, $duration) {
         $gif_file = $this->temp_folder . '/gif_' . $entry_id . '.gif';
         
-        // Progressive quality settings
         $quality_levels = array(
             array('fps' => 15, 'width' => 720),
             array('fps' => 12, 'width' => 640),
@@ -416,18 +365,16 @@ class Nitter_Video_Handler {
             array('fps' => 5, 'width' => 320)
         );
         
-        foreach ($quality_levels as $index => $quality) {
+        foreach ($quality_levels as $quality) {
             $fps = $quality['fps'];
             $width = $quality['width'];
             
             $this->database->add_log('video_conversion', "Attempting conversion with FPS: {$fps}, Width: {$width}px");
             
-            // Delete previous attempt if exists
             if (file_exists($gif_file)) {
                 unlink($gif_file);
             }
             
-            // Build ffmpeg command with Windows compatibility
             $is_windows = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
             if ($is_windows) {
                 $video_escaped = '"' . str_replace('/', '\\', $video_file) . '"';
@@ -439,7 +386,6 @@ class Nitter_Video_Handler {
                 $ffmpeg = $this->ffmpeg_path;
             }
             
-            // Use GPU for decode/resize, CPU for GIF palette
             $command = sprintf(
                 '%s -hwaccel cuda -i %s -vf "fps=%d,scale=%d:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3" -y %s 2>&1',
                 $ffmpeg,
@@ -461,7 +407,6 @@ class Nitter_Video_Handler {
             
             $this->database->add_log('video_conversion', "GIF created: " . $this->format_bytes($file_size) . " with {$fps}fps @ {$width}px");
             
-            // Check if size is acceptable
             if ($size_mb <= $this->max_size_mb) {
                 return $gif_file;
             }
@@ -469,16 +414,12 @@ class Nitter_Video_Handler {
             $this->database->add_log('video_conversion', "GIF too large (" . round($size_mb, 2) . "MB > {$this->max_size_mb}MB), trying lower quality");
         }
         
-        // If we get here, all attempts failed
         $this->cleanup_files($gif_file);
         $this->database->add_log('video_conversion', "Failed to create GIF under size limit after all attempts");
         
         return false;
     }
     
-    /**
-     * Cleanup temporary files
-     */
     private function cleanup_files(...$files) {
         foreach ($files as $file) {
             if ($file && file_exists($file)) {
@@ -487,9 +428,6 @@ class Nitter_Video_Handler {
         }
     }
     
-    /**
-     * Format bytes to human readable
-     */
     private function format_bytes($bytes) {
         if ($bytes >= 1073741824) {
             return number_format($bytes / 1073741824, 2) . ' GB';
@@ -502,9 +440,6 @@ class Nitter_Video_Handler {
         }
     }
     
-    /**
-     * Get configuration status for admin display
-     */
     public function get_config_status() {
         $imgbb_status = $this->imgbb_client->get_config_status();
         
@@ -536,9 +471,6 @@ class Nitter_Video_Handler {
         return $status;
     }
     
-    /**
-     * Get ImgBB client instance
-     */
     public function get_imgbb_client() {
         return $this->imgbb_client;
     }
