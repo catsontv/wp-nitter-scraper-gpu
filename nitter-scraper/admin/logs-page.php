@@ -6,7 +6,6 @@ if (!defined('ABSPATH')) {
 global $nitter_admin;
 $database = $nitter_admin->get_database();
 
-// Handle clear logs action
 $message = '';
 $message_type = '';
 
@@ -21,10 +20,9 @@ if (isset($_POST['clear_logs']) && wp_verify_nonce($_POST['nonce'], 'nitter_clea
     }
 }
 
-// Get logs
-$logs = $database->get_logs(200);
+$log_type_filter = isset($_GET['log_type']) ? sanitize_text_field($_GET['log_type']) : 'all';
+$logs = $database->get_logs(200, $log_type_filter);
 
-// Function to format time ago
 function time_ago($datetime) {
     $time = time() - strtotime($datetime);
     
@@ -48,7 +46,20 @@ function time_ago($datetime) {
     
     <div class="nitter-form">
         <div class="nitter-form-row">
-            <button type="button" id="nitter-refresh-logs" class="nitter-btn">Refresh Logs</button>
+            <label for="log-type-filter">Filter by Type:</label>
+            <select id="log-type-filter" onchange="location.href='?page=nitter-logs&log_type='+this.value">
+                <option value="all" <?php selected($log_type_filter, 'all'); ?>>All</option>
+                <option value="scrape_image" <?php selected($log_type_filter, 'scrape_image'); ?>>Image Scraping</option>
+                <option value="scrape_video" <?php selected($log_type_filter, 'scrape_video'); ?>>Video Scraping</option>
+                <option value="conversion" <?php selected($log_type_filter, 'conversion'); ?>>Video Conversion</option>
+                <option value="upload" <?php selected($log_type_filter, 'upload'); ?>>Upload</option>
+                <option value="feed" <?php selected($log_type_filter, 'feed'); ?>>Feed</option>
+                <option value="feed_reconciliation" <?php selected($log_type_filter, 'feed_reconciliation'); ?>>Feed Reconciliation</option>
+                <option value="cron" <?php selected($log_type_filter, 'cron'); ?>>Cron</option>
+                <option value="system" <?php selected($log_type_filter, 'system'); ?>>System</option>
+            </select>
+            
+            <button type="button" id="nitter-refresh-logs" class="nitter-btn" onclick="location.reload()">Refresh Logs</button>
             
             <form method="post" style="display: inline; margin-left: 10px;">
                 <?php wp_nonce_field('nitter_clear_logs', 'nonce'); ?>
@@ -60,7 +71,7 @@ function time_ago($datetime) {
         </div>
     </div>
     
-    <h2>Recent Activity</h2>
+    <h2>Recent Activity <?php if ($log_type_filter !== 'all') echo '(' . esc_html(ucwords(str_replace('_', ' ', $log_type_filter))) . ')'; ?></h2>
     
     <div id="nitter-logs-container" class="nitter-logs-container">
         <?php if (empty($logs)): ?>
@@ -90,15 +101,9 @@ function time_ago($datetime) {
 
 <script>
 jQuery(document).ready(function($) {
-    // Auto-scroll to bottom of logs
     var $logsContainer = $('#nitter-logs-container');
     if ($logsContainer.length) {
         $logsContainer.scrollTop($logsContainer[0].scrollHeight);
     }
-    
-    // Auto-refresh logs every 30 seconds
-    setInterval(function() {
-        location.reload();
-    }, 30000);
 });
 </script>
