@@ -16,7 +16,6 @@ class Nitter_Media_Handler {
             return false;
         }
         
-        // Handle base64 data array from Node.js
         if (is_array($image_data) && isset($image_data['data'])) {
             return $this->save_base64_image($image_data);
         }
@@ -26,46 +25,39 @@ class Nitter_Media_Handler {
     
     private function save_base64_image($image_data) {
         if (!isset($image_data['data']) || !isset($image_data['mimeType'])) {
-            $this->database->add_log('media', 'Invalid image data format');
+            $this->database->add_log('upload', 'Invalid image data format');
             return false;
         }
         
-        // Include required WordPress functions
         if (!function_exists('wp_handle_sideload')) {
             require_once(ABSPATH . 'wp-admin/includes/media.php');
             require_once(ABSPATH . 'wp-admin/includes/file.php');
             require_once(ABSPATH . 'wp-admin/includes/image.php');
         }
         
-        // Get file extension from mime type
         $mime_parts = explode('/', $image_data['mimeType']);
         $extension = isset($mime_parts[1]) ? $mime_parts[1] : 'jpg';
         if ($extension === 'jpeg') $extension = 'jpg';
         
-        // Generate unique filename
         $filename = 'nitter_' . time() . '_' . wp_generate_password(8, false) . '.' . $extension;
         
-        // Decode base64 data
         $binary_data = base64_decode($image_data['data']);
         
         if ($binary_data === false) {
-            $this->database->add_log('media', 'Failed to decode base64 image data');
+            $this->database->add_log('upload', 'Failed to decode base64 image data');
             return false;
         }
         
-        // Get upload directory
         $upload_dir = wp_upload_dir();
         $upload_path = $upload_dir['path'] . '/' . $filename;
         
-        // Write binary data to file
         $bytes_written = file_put_contents($upload_path, $binary_data);
         
         if ($bytes_written === false) {
-            $this->database->add_log('media', 'Failed to write image data to file');
+            $this->database->add_log('upload', 'Failed to write image data to file');
             return false;
         }
         
-        // Create attachment
         $attachment = array(
             'post_mime_type' => $image_data['mimeType'],
             'post_title' => preg_replace('/\.[^.]+$/', '', basename($filename)),
@@ -77,22 +69,20 @@ class Nitter_Media_Handler {
         $attach_id = wp_insert_attachment($attachment, $upload_path);
         
         if (is_wp_error($attach_id)) {
-            $this->database->add_log('media', 'Failed to insert attachment: ' . $attach_id->get_error_message());
+            $this->database->add_log('upload', 'Failed to insert attachment: ' . $attach_id->get_error_message());
             unlink($upload_path);
             return false;
         }
         
-        // Generate attachment metadata
         $attach_data = wp_generate_attachment_metadata($attach_id, $upload_path);
         wp_update_attachment_metadata($attach_id, $attach_data);
         
-        // Set alt text and store original URL
         update_post_meta($attach_id, '_wp_attachment_image_alt', 'Image from Nitter scraper');
         if (isset($image_data['url'])) {
             update_post_meta($attach_id, '_nitter_original_url', $image_data['url']);
         }
         
-        $this->database->add_log('media', 'Image saved to media library: ' . $filename . ' (ID: ' . $attach_id . ')');
+        $this->database->add_log('upload', 'Image saved to media library: ' . $filename . ' (ID: ' . $attach_id . ')');
         return $attach_id;
     }
     
@@ -137,7 +127,7 @@ class Nitter_Media_Handler {
         }
         
         if ($deleted_count > 0) {
-            $this->database->add_log('media', "Deleted $deleted_count images for tweet ID: $tweet_id");
+            $this->database->add_log('scrape_image', "Deleted $deleted_count images for tweet ID: $tweet_id");
         }
         
         return $deleted_count;
@@ -181,7 +171,7 @@ class Nitter_Media_Handler {
         }
         
         if ($deleted_count > 0) {
-            $this->database->add_log('media', "Cleaned up $deleted_count orphaned images");
+            $this->database->add_log('scrape_image', "Cleaned up $deleted_count orphaned images");
         }
         
         return $deleted_count;
