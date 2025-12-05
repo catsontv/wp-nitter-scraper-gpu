@@ -61,6 +61,8 @@ function time_ago($datetime) {
             
             <button type="button" id="nitter-refresh-logs" class="nitter-btn" onclick="location.reload()">Refresh Logs</button>
             
+            <button type="button" id="nitter-export-logs" class="nitter-btn nitter-btn-secondary">Export Logs</button>
+            
             <form method="post" style="display: inline; margin-left: 10px;">
                 <?php wp_nonce_field('nitter_clear_logs', 'nonce'); ?>
                 <button type="submit" name="clear_logs" class="nitter-btn nitter-btn-danger"
@@ -80,7 +82,7 @@ function time_ago($datetime) {
             </div>
         <?php else: ?>
             <?php foreach ($logs as $log): ?>
-                <div class="nitter-log-entry">
+                <div class="nitter-log-entry" data-log-type="<?php echo esc_attr($log->log_type); ?>" data-timestamp="<?php echo esc_attr($log->date_created); ?>" data-message="<?php echo esc_attr($log->message); ?>">
                     <span class="nitter-log-time">
                         <?php echo esc_html(date('H:i:s', strtotime($log->date_created))); ?>
                         <small>(<?php echo esc_html(time_ago($log->date_created)); ?>)</small>
@@ -105,5 +107,40 @@ jQuery(document).ready(function($) {
     if ($logsContainer.length) {
         $logsContainer.scrollTop($logsContainer[0].scrollHeight);
     }
+    
+    // Export logs functionality
+    $('#nitter-export-logs').on('click', function() {
+        var logs = [];
+        var logType = '<?php echo esc_js($log_type_filter); ?>';
+        var filterLabel = logType === 'all' ? 'all' : logType.replace('_', '-');
+        
+        $('.nitter-log-entry').each(function() {
+            var $entry = $(this);
+            var timestamp = $entry.data('timestamp');
+            var type = $entry.data('log-type');
+            var message = $entry.data('message');
+            
+            logs.push(timestamp + ' [' + type + '] ' + message);
+        });
+        
+        if (logs.length === 0) {
+            alert('No logs to export');
+            return;
+        }
+        
+        var content = logs.join('\n');
+        var blob = new Blob([content], { type: 'text/plain' });
+        var url = window.URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        
+        var timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        a.download = 'nitter-logs-' + filterLabel + '-' + timestamp + '.txt';
+        
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+    });
 });
 </script>
