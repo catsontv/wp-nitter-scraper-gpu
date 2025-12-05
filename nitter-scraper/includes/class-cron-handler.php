@@ -24,6 +24,7 @@ class Nitter_Cron_Handler {
         add_action('nitter_cleanup_old_logs', array($this, 'cleanup_old_logs'));
         add_action('nitter_auto_scrape_accounts', array($this, 'auto_scrape_accounts'));
         add_action('nitter_process_videos', array($this, 'process_pending_videos'));
+        add_action('nitter_reconcile_feed', array($this, 'reconcile_feed')); // PHASE 1: Feed reconciliation
     }
     
     public function schedule_events() {
@@ -45,6 +46,11 @@ class Nitter_Cron_Handler {
         // Schedule video processing every 5 minutes
         if (!wp_next_scheduled('nitter_process_videos')) {
             wp_schedule_event(time(), 'nitter_five_minutes', 'nitter_process_videos');
+        }
+        
+        // PHASE 1: Schedule feed reconciliation every 15 minutes
+        if (!wp_next_scheduled('nitter_reconcile_feed')) {
+            wp_schedule_event(time(), 'nitter_fifteen_minutes', 'nitter_reconcile_feed');
         }
     }
     
@@ -141,11 +147,42 @@ class Nitter_Cron_Handler {
         $db->add_log('video_conversion', 'CRON HOOK: process_pending_batch() completed');
     }
     
+    /**
+     * PHASE 1: Feed Reconciliation Auto-Healing
+     * Runs every 15 minutes to find tweets that were published but never appeared in feed
+     * Auto-promotes them by updating date_published to NOW()
+     */
+    public function reconcile_feed() {
+        $db = $this->get_database();
+        
+        $db->add_log('feed_reconciliation', '>>> RECONCILIATION CRON STARTED <<<');
+        
+        // Get orphaned tweets (published in last 12 hours but never rendered)
+        $orphans = $db->get_orphaned_tweets(12);
+        
+        if (empty($orphans)) {
+            $db->add_log('feed_reconciliation', 'No orphaned tweets found');
+            return;
+        }
+        
+        $count = count($orphans);
+        $db->add_log('feed_reconciliation', "Found {$count} orphaned tweet(s) - promoting to feed top");
+        
+        // Promote each orphan by updating date_published to NOW()
+        foreach ($orphans as $orphan) {
+            $db->publish_tweet($orphan->id);
+            $db->add_log('feed_reconciliation', "Promoted tweet ID {$orphan->id} (original date: {$orphan->date_scraped})");
+        }
+        
+        $db->add_log('feed_reconciliation', "Reconciliation completed: {$count} orphaned tweet(s) promoted");
+    }
+    
     public function clear_scheduled_events() {
         wp_clear_scheduled_hook('nitter_cleanup_old_content');
         wp_clear_scheduled_hook('nitter_cleanup_old_logs');
         wp_clear_scheduled_hook('nitter_auto_scrape_accounts');
         wp_clear_scheduled_hook('nitter_process_videos');
+        wp_clear_scheduled_hook('nitter_reconcile_feed'); // PHASE 1
     }
     
     public function manual_cleanup() {
@@ -158,11 +195,13 @@ class Nitter_Cron_Handler {
         $next_content = wp_next_scheduled('nitter_cleanup_old_content');
         $next_logs = wp_next_scheduled('nitter_cleanup_old_logs');
         $next_videos = wp_next_scheduled('nitter_process_videos');
+        $next_reconcile = wp_next_scheduled('nitter_reconcile_feed'); // PHASE 1
         
         return array(
             'content' => $next_content ? date('Y-m-d H:i:s', $next_content) : 'Not scheduled',
             'logs' => $next_logs ? date('Y-m-d H:i:s', $next_logs) : 'Not scheduled',
-            'videos' => $next_videos ? date('Y-m-d H:i:s', $next_videos) : 'Not scheduled'
+            'videos' => $next_videos ? date('Y-m-d H:i:s', $next_videos) : 'Not scheduled',
+            'reconciliation' => $next_reconcile ? date('Y-m-d H:i:s', $next_reconcile) : 'Not scheduled' // PHASE 1
         );
     }
 }

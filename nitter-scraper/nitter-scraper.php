@@ -1,49 +1,30 @@
 <?php
 /**
- * Plugin Name: Nitter Scraper
- * Description: Scrape Twitter/X accounts via Nitter instances with video→GIF conversion and ImgBB integration
- * Version: 1.4.2
+ * Plugin Name: Nitter Scraper GPU
+ * Description: WordPress plugin to scrape X/Twitter accounts using Nitter instances with GPU-accelerated GIF conversion
+ * Version: 2.0.0
  * Author: Your Name
- * Text Domain: nitter-scraper
  */
 
 if (!defined('ABSPATH')) {
     exit;
 }
 
-// Define plugin constants
-define('NITTER_SCRAPER_VERSION', '1.4.2');
+// Define plugin constants - using NITTER_SCRAPER_* naming to match ajax/admin files
+define('NITTER_SCRAPER_VERSION', '2.0.0');
 define('NITTER_SCRAPER_PATH', plugin_dir_path(__FILE__));
 define('NITTER_SCRAPER_URL', plugin_dir_url(__FILE__));
 
-// Include required files
+// Include required class files
 require_once NITTER_SCRAPER_PATH . 'includes/class-database.php';
 require_once NITTER_SCRAPER_PATH . 'includes/class-api.php';
 require_once NITTER_SCRAPER_PATH . 'includes/class-media-handler.php';
-require_once NITTER_SCRAPER_PATH . 'includes/class-video-handler.php';
 require_once NITTER_SCRAPER_PATH . 'includes/class-imgbb-client.php';
+require_once NITTER_SCRAPER_PATH . 'includes/class-video-handler.php';
 require_once NITTER_SCRAPER_PATH . 'includes/class-cron-handler.php';
 require_once NITTER_SCRAPER_PATH . 'admin/class-admin.php';
-require_once NITTER_SCRAPER_PATH . 'ajax/ajax-handlers.php';
 
-/**
- * Add custom cron schedules - MUST be registered early and always
- * This runs on every page load to ensure the interval exists when cron tries to use it
- */
-function nitter_add_cron_schedules($schedules) {
-    if (!isset($schedules['nitter_five_minutes'])) {
-        $schedules['nitter_five_minutes'] = array(
-            'interval' => 300, // 5 minutes in seconds
-            'display' => __('Every 5 Minutes', 'nitter-scraper')
-        );
-    }
-    return $schedules;
-}
-add_filter('cron_schedules', 'nitter_add_cron_schedules');
-
-/**
- * Global function to get database instance
- */
+// Global singleton functions
 function nitter_get_database() {
     static $database = null;
     if ($database === null) {
@@ -52,9 +33,6 @@ function nitter_get_database() {
     return $database;
 }
 
-/**
- * Global function to get API instance
- */
 function nitter_get_api() {
     static $api = null;
     if ($api === null) {
@@ -63,9 +41,6 @@ function nitter_get_api() {
     return $api;
 }
 
-/**
- * Global function to get media handler instance
- */
 function nitter_get_media_handler() {
     static $media_handler = null;
     if ($media_handler === null) {
@@ -74,9 +49,6 @@ function nitter_get_media_handler() {
     return $media_handler;
 }
 
-/**
- * Global function to get video handler instance
- */
 function nitter_get_video_handler() {
     static $video_handler = null;
     if ($video_handler === null) {
@@ -85,9 +57,6 @@ function nitter_get_video_handler() {
     return $video_handler;
 }
 
-/**
- * Global function to get ImgBB client instance
- */
 function nitter_get_imgbb_client() {
     static $imgbb_client = null;
     if ($imgbb_client === null) {
@@ -96,9 +65,6 @@ function nitter_get_imgbb_client() {
     return $imgbb_client;
 }
 
-/**
- * Global function to get cron handler instance
- */
 function nitter_get_cron_handler() {
     static $cron_handler = null;
     if ($cron_handler === null) {
@@ -107,60 +73,63 @@ function nitter_get_cron_handler() {
     return $cron_handler;
 }
 
-/**
- * CRITICAL: Initialize cron handler EARLY so hooks are registered
- * This must run before WordPress processes cron events
- */
+// Custom cron intervals
+function nitter_custom_cron_intervals($schedules) {
+    if (!isset($schedules['nitter_five_minutes'])) {
+        $schedules['nitter_five_minutes'] = array(
+            'interval' => 300,
+            'display' => __('Every 5 Minutes', 'nitter-scraper')
+        );
+    }
+    if (!isset($schedules['nitter_fifteen_minutes'])) {
+        $schedules['nitter_fifteen_minutes'] = array(
+            'interval' => 900,
+            'display' => __('Every 15 Minutes', 'nitter-scraper')
+        );
+    }
+    return $schedules;
+}
+add_filter('cron_schedules', 'nitter_custom_cron_intervals');
+
+// Initialize cron handler early
 function nitter_init_cron_handler() {
-    // Initialize cron handler to register action hooks
     nitter_get_cron_handler();
 }
-add_action('init', 'nitter_init_cron_handler', 1); // Priority 1 = very early
+add_action('init', 'nitter_init_cron_handler', 1);
 
-/**
- * Activation hook
- */
-function nitter_scraper_activate() {
+// Activation hook
+function nitter_activate() {
     // Ensure custom cron interval is registered
-    add_filter('cron_schedules', 'nitter_add_cron_schedules');
+    add_filter('cron_schedules', 'nitter_custom_cron_intervals');
     
     $database = nitter_get_database();
     $database->create_tables();
     
-    // Schedule cron events
-    $cron = nitter_get_cron_handler();
-    $cron->schedule_events();
+    $cron_handler = nitter_get_cron_handler();
+    $cron_handler->schedule_events();
     
-    // Log activation
+    add_option('nitter_scraper_version', NITTER_SCRAPER_VERSION);
+    
     $database->add_log('system', 'Plugin activated - Version ' . NITTER_SCRAPER_VERSION);
 }
-register_activation_hook(__FILE__, 'nitter_scraper_activate');
+register_activation_hook(__FILE__, 'nitter_activate');
 
-/**
- * Deactivation hook
- */
-function nitter_scraper_deactivate() {
-    // Clear scheduled events
-    $cron = nitter_get_cron_handler();
-    $cron->clear_scheduled_events();
+// Deactivation hook
+function nitter_deactivate() {
+    $cron_handler = nitter_get_cron_handler();
+    $cron_handler->clear_scheduled_events();
     
-    // Log deactivation
     $database = nitter_get_database();
     $database->add_log('system', 'Plugin deactivated');
 }
-register_deactivation_hook(__FILE__, 'nitter_scraper_deactivate');
+register_deactivation_hook(__FILE__, 'nitter_deactivate');
 
-/**
- * Check and reschedule cron events if needed
- * This ensures cron events stay scheduled even if WordPress cron gets cleared
- */
+// Ensure cron events stay scheduled
 function nitter_ensure_cron_scheduled() {
-    // Only run this check in admin to avoid overhead
     if (!is_admin()) {
         return;
     }
     
-    // Check if video processing cron is scheduled
     if (!wp_next_scheduled('nitter_process_videos')) {
         $cron = nitter_get_cron_handler();
         $cron->schedule_events();
@@ -171,16 +140,16 @@ function nitter_ensure_cron_scheduled() {
 }
 add_action('admin_init', 'nitter_ensure_cron_scheduled');
 
-/**
- * Initialize admin interface
- */
+// Initialize admin interface
 if (is_admin()) {
-    new Nitter_Admin();
+    global $nitter_admin;
+    $nitter_admin = new Nitter_Admin();
 }
 
-/**
- * Add settings link on plugins page
- */
+// Include AJAX handlers - ajax-handlers.php will load the other ajax files
+require_once NITTER_SCRAPER_PATH . 'ajax/ajax-handlers.php';
+
+// Add settings link on plugins page
 function nitter_scraper_settings_link($links) {
     $settings_link = '<a href="admin.php?page=nitter-scraper">Settings</a>';
     array_unshift($links, $settings_link);

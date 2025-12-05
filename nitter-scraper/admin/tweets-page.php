@@ -10,7 +10,6 @@ $media_handler = $nitter_admin->get_media_handler();
 // Get accounts for filter dropdown
 $accounts = $database->get_accounts();
 
-// Function to format time ago like Twitter
 function twitter_time_ago($datetime) {
     $time = time() - strtotime($datetime);
     
@@ -60,7 +59,6 @@ jQuery(document).ready(function($) {
     var isLoading = false;
     var hasMoreTweets = true;
     
-    // Copy GIF URL to clipboard
     $(document).on('click', '.nitter-copy-gif-url', function(e) {
         e.preventDefault();
         e.stopPropagation();
@@ -68,9 +66,7 @@ jQuery(document).ready(function($) {
         var url = $(this).data('url');
         var button = $(this);
         
-        // Copy to clipboard
         navigator.clipboard.writeText(url).then(function() {
-            // Show success feedback
             var originalText = button.html();
             button.html('✅ Copied!');
             button.css('background', '#00ba7c');
@@ -84,14 +80,12 @@ jQuery(document).ready(function($) {
         });
     });
     
-    // Prevent copy button from triggering image modal
     $(document).on('click', '.nitter-gif-item', function(e) {
         if ($(e.target).hasClass('nitter-copy-gif-url')) {
             e.stopPropagation();
         }
     });
     
-    // Load tweets function
     function loadTweets(accountId, offset, append) {
         if (isLoading) return;
         
@@ -148,7 +142,6 @@ jQuery(document).ready(function($) {
         });
     }
     
-    // Initialize image modal
     function initImageModal() {
         $('#nitter-image-modal').remove();
         
