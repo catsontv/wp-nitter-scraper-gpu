@@ -8,6 +8,9 @@
  * C:\xampp\php\php.exe C:\xampp\htdocs\wp-content\plugins\nitter-scraper\cron-scrape-accounts.php
  * 
  * Schedule: Every 60 minutes (or as configured in plugin settings)
+ * 
+ * FIXED: Now uses sequential processing with 3-second delays between accounts
+ * to prevent Chrome instance overload.
  */
 
 // Find WordPress installation
@@ -26,6 +29,7 @@ if (!defined('ABSPATH')) {
 
 // Get database and log start
 $database = nitter_get_database();
+$start_time = time();
 $database->add_log('system', '=== SYSTEM CRON: Account scraping started ===');
 
 // Check if system cron is enabled
@@ -43,34 +47,59 @@ if (!class_exists('Nitter_API')) {
 
 // Get all accounts
 $accounts = $database->get_accounts();
-$database->add_log('system', 'SYSTEM CRON: Found ' . count($accounts) . ' total accounts');
+$total_accounts = count($accounts);
+$database->add_log('system', "SYSTEM CRON: Found {$total_accounts} total accounts");
 
 $api = new Nitter_API();
-$active_count = 0;
-$success_count = 0;
-$fail_count = 0;
+$active_accounts = array();
 
-// Scrape each active account
+// Filter active accounts
 foreach ($accounts as $account) {
     if ($account->is_active) {
-        $active_count++;
-        $database->add_log('scrape_image', "SYSTEM CRON: Scraping account {$account->account_username}");
-        
-        $result = $api->scrape_account($account->id);
-        
-        if ($result['success']) {
-            $success_count++;
-            $database->add_log('scrape_image', "SYSTEM CRON: Success - {$account->account_username}");
-        } else {
-            $fail_count++;
-            $database->add_log('scrape_image', "SYSTEM CRON: Failed - {$account->account_username}: {$result['message']}");
-        }
-        
-        // Sleep 30 seconds between accounts to avoid rate limiting
-        sleep(30);
+        $active_accounts[] = $account;
     }
 }
 
-$database->add_log('system', "=== SYSTEM CRON: Completed - {$success_count} success, {$fail_count} failed out of {$active_count} active accounts ===");
+$active_count = count($active_accounts);
+$database->add_log('system', "SYSTEM CRON: Found {$active_count} active accounts to process");
+
+if (empty($active_accounts)) {
+    $database->add_log('system', 'SYSTEM CRON: No active accounts, exiting');
+    exit;
+}
+
+$success_count = 0;
+$fail_count = 0;
+$current_num = 0;
+
+// Process each active account SEQUENTIALLY (one at a time)
+foreach ($active_accounts as $account) {
+    $current_num++;
+    $progress = round(($current_num / $active_count) * 100, 1);
+    
+    $database->add_log('system', "SYSTEM CRON: [{$current_num}/{$active_count} - {$progress}%] Processing {$account->account_username}");
+    
+    $result = $api->scrape_account($account->id);
+    
+    if ($result['success']) {
+        $success_count++;
+        $database->add_log('scrape_image', "✓ System cron success: {$account->account_username}");
+    } else {
+        $fail_count++;
+        $database->add_log('scrape_image', "✗ System cron failed: {$account->account_username} - {$result['message']}");
+    }
+    
+    // Wait 3 seconds between accounts to prevent Chrome overload
+    if ($current_num < $active_count) {
+        sleep(3);
+    }
+}
+
+$total_elapsed = time() - $start_time;
+$total_minutes = round($total_elapsed / 60, 1);
+
+$database->add_log('system', '=== SYSTEM CRON: Completed ===');
+$database->add_log('system', "SYSTEM CRON: Results: {$success_count} successful, {$fail_count} failed out of {$active_count} active accounts");
+$database->add_log('system', "SYSTEM CRON: Total time: {$total_minutes} minutes ({$total_elapsed}s)");
 
 exit;
