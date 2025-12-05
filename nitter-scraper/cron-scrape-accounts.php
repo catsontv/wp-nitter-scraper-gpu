@@ -13,6 +13,10 @@
  * to prevent Chrome instance overload.
  */
 
+// CRITICAL: Allow unlimited execution time for processing all accounts
+set_time_limit(0);
+ini_set('max_execution_time', 0);
+
 // Find WordPress installation
 $wp_load_path = dirname(dirname(dirname(dirname(__FILE__)))) . '/wp-load.php';
 
