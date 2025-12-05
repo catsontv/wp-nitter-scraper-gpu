@@ -196,7 +196,7 @@ class Nitter_Database {
             'parallel_video_count' => '5',
             'first_pass_abort_threshold_mb' => '70',
             'log_retention_days' => '7',
-            'use_system_cron' => '1',
+            'use_system_cron' => '0',
             'system_cron_interval' => '60'
         );
         
