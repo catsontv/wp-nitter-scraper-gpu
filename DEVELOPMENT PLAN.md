@@ -7,10 +7,11 @@ Comprehensive enhancement plan for the wp-nitter-scraper-gpu plugin to improve f
 **Repository:** [https://github.com/catsontv/wp-nitter-scraper-gpu](https://github.com/catsontv/wp-nitter-scraper-gpu)
 **Base Branch:** `parallel-video-processing`
 **Target Environment:** Windows 10, XAMPP, NVIDIA GTX 1070
+**Nitter Instances:** Custom instances only (no public instances)
 
 ***
 
-## **Phase 1: Feed Correctness \& Publishing Logic**
+## **Phase 1: Feed Correctness & Publishing Logic**
 
 ### **Priority:** CRITICAL
 
@@ -96,11 +97,11 @@ Comprehensive enhancement plan for the wp-nitter-scraper-gpu plugin to improve f
 
 ***
 
-## **Phase 2: Video Processing Intelligence**
+## **Phase 2: Critical Video Processing & Admin Improvements**
 
-### **Priority:** HIGH
+### **Priority:** CRITICAL
 
-### **Estimated Time:** 4-5 days
+### **Estimated Time:** 5-6 days
 
 ### **Feature 2.1: Orientation-Aware Smart Quality Levels**
 
@@ -144,7 +145,147 @@ Comprehensive enhancement plan for the wp-nitter-scraper-gpu plugin to improve f
 
 ***
 
-### **Feature 2.2: Upload Retry Mechanism**
+### **Feature 2.2: Enhanced Logging with Process-Type Filters**
+
+**Objective:** Filter logs by image scraping vs. video processing.
+
+**Database Changes:**
+
+- Add to `logs` table:
+    - `log_type` ENUM('scrape_image','scrape_video','conversion','upload','cron','system','other') DEFAULT 'other'
+
+**Logging Updates:**
+
+- When logging, specify type:
+    - Image scraping: `log_type = 'scrape_image'`
+    - Video processing: `log_type = 'scrape_video'` or `'conversion'`
+    - Upload: `log_type = 'upload'`
+    - System events: `log_type = 'system'`
+
+**Admin UI:**
+
+- Add dropdown filter: "All / Image Scraping / Video Processing / Upload / Cron / System"
+- Filter query by `log_type`
+
+**Files to Modify:**
+
+- `includes/class-database.php` (update add_log method signature, schema)
+- All files that call `add_log()` (specify type)
+- `admin/logs-page.php` (add filter dropdown)
+
+***
+
+### **Feature 2.3: Bulk Account Import/Export**
+
+**Objective:** Upload/download account lists via TXT file.
+
+**File Format (TXT):**
+
+```
+username1
+username2,60
+https://twitter.com/username3,90
+@username4
+```
+
+**Import Features:**
+
+- Drag-and-drop file upload or textarea input
+- Parse: username, retention days (default 30 if not specified)
+- Normalize: Strip whitespace, handle URLs, remove @
+- Validate: Check format
+- Deduplicate: Skip existing accounts, report count
+- Preview before confirm
+- Show: "X imported, Y duplicates skipped, Z invalid"
+
+**Export Features:**
+
+- Button: "Export Accounts"
+- Format: `username,retention_days`
+- Filename: `nitter-accounts-YYYY-MM-DD-HHMMSS.txt`
+- Include: All accounts or filtered by status
+
+**AJAX Handlers:**
+
+- `nitter_import_accounts`
+- `nitter_export_accounts`
+
+**Files to Modify:**
+
+- `admin/accounts-page.php` (add import/export UI)
+- `ajax/accounts-ajax.php` (add handlers)
+
+***
+
+### **Feature 2.4: Configurable Log Retention**
+
+**Objective:** Control how long logs are stored.
+
+**Settings:**
+
+- Add dropdown: "Log retention days"
+    - Options: 1, 7, 14, 30, 90, 0 (never delete)
+    - Default: 7
+- Store as: `nitter_log_retention_days`
+
+**Daily Cron:**
+
+- New cron: `nitter_cleanup_logs` (once daily)
+- If retention > 0:
+    - `DELETE FROM logs WHERE date_created < NOW() - INTERVAL X DAY`
+- If 0: Do nothing (manual cleanup only)
+
+**Manual Cleanup Button:**
+
+- Add "Clean Old Logs" button to logs page
+- Respects retention setting
+
+**Files to Modify:**
+
+- `admin/settings-page.php` (add retention setting)
+- `includes/class-cron-handler.php` (add cleanup cron)
+- `admin/logs-page.php` (add manual cleanup button)
+
+***
+
+### **Feature 2.5: System Cron for Account Scraping**
+
+**Objective:** Move account scraping from WP-Cron to Windows Task Scheduler for reliability.
+
+**Implementation:**
+
+- Create entry point: `cron-scrape-accounts.php`
+    - Bootstrap WordPress (`wp-load.php`)
+    - Call existing scrape method manually
+- Windows Task Scheduler setup:
+    - Command: `C:\xampp\php\php.exe C:\xampp\htdocs\wp-content\plugins\nitter-scraper\cron-scrape-accounts.php`
+    - Schedule: Every 60 minutes (configurable)
+- Keep WP-Cron hook as fallback (optional disable via setting)
+
+**Settings:**
+
+- Add checkbox: "Use System Cron" (disable WP-Cron scraping)
+- Add text input: "System Cron Interval (minutes)" (default: 60)
+- Instructions displayed on settings page with exact command
+
+**Files to Create:**
+
+- `cron-scrape-accounts.php`
+
+**Files to Modify:**
+
+- `includes/class-cron-handler.php` (add setting to disable WP-Cron version)
+- `admin/settings-page.php` (add system cron settings and instructions)
+
+***
+
+## **Phase 3: Upload Reliability & Quality of Life**
+
+### **Priority:** HIGH
+
+### **Estimated Time:** 4-5 days
+
+### **Feature 3.1: Upload Retry Mechanism**
 
 **Objective:** Retry failed uploads with exponential backoff instead of giving up immediately.
 
@@ -182,13 +323,7 @@ Comprehensive enhancement plan for the wp-nitter-scraper-gpu plugin to improve f
 
 ***
 
-## **Phase 3: Quality of Life Improvements**
-
-### **Priority:** MEDIUM
-
-### **Estimated Time:** 2-3 days
-
-### **Feature 3.1: Skip Text-Only Tweets**
+### **Feature 3.2: Skip Text-Only Tweets**
 
 **Objective:** Don't scrape/store tweets with no media.
 
@@ -214,7 +349,7 @@ Comprehensive enhancement plan for the wp-nitter-scraper-gpu plugin to improve f
 
 ***
 
-### **Feature 3.2: Randomize GIF Names**
+### **Feature 3.3: Randomize GIF Names**
 
 **Objective:** Replace sequential names with creative random names.
 
@@ -229,41 +364,50 @@ Comprehensive enhancement plan for the wp-nitter-scraper-gpu plugin to improve f
 
 **Files to Modify:**
 
-- `includes/class-upload-manager.php` (new helper method)
-- `includes/class-video-handler.php` (use helper before upload)
+- `includes/class-video-handler.php` (add helper method, use before upload)
 
 ***
 
-### **Feature 3.3: Enhanced Logging with Process-Type Filters**
+### **Feature 3.4: "Read More" for Long Tweets**
 
-**Objective:** Filter logs by image scraping vs. video processing.
+**Objective:** Collapse tweets over 400 characters with expand/collapse.
 
-**Database Changes:**
+**Server-Side (HTML):**
 
-- Add to `logs` table:
-    - `log_type` ENUM('scrape_image','scrape_video','conversion','upload','cron','other') DEFAULT 'other'
+- In tweet text rendering:
+    - If `mb_strlen($text) <= 400`: Display full text
+    - Else:
+        - Find last space before 400: `mb_strrpos(mb_substr($text, 0, 400), ' ')`
+        - Output structure:
 
-**Logging Updates:**
+```html
+<span class="tweet-text-short" data-tweet-id="X">TRUNCATED...</span>
+<span class="tweet-text-full" data-tweet-id="X" style="display:none;">FULL TEXT</span>
+<a href="#" class="tweet-read-more" data-tweet-id="X">Read more</a>
+```
 
-- When logging, specify type:
-    - Image scraping: `log_type = 'scrape_image'`
-    - Video processing: `log_type = 'scrape_video'` or `'conversion'`
-    - Upload: `log_type = 'upload'`
+**JavaScript:**
 
-**Admin UI:**
+- On click `.tweet-read-more`:
+    - Toggle visibility of `.tweet-text-short` / `.tweet-text-full`
+    - Change link text: "Read more" ↔ "Show less"
+    - Prevent default
 
-- Add dropdown filter: "All / Image Scraping / Video Processing / Upload / Cron"
-- Filter query by `log_type`
+**CSS:**
+
+- Style `.tweet-read-more` as link (blue, pointer cursor)
+- Optional smooth transition
 
 **Files to Modify:**
 
-- `includes/class-database.php` (update add_log method signature, schema)
-- All files that call `add_log()` (specify type)
-- `admin/logs-page.php` (add filter dropdown)
+- `admin/tweets-page.php` (truncation logic)
+- `ajax/tweets-ajax.php` (if tweets load via AJAX)
+- `assets/admin.js` (add toggle handler)
+- `assets/admin.css` (styling)
 
 ***
 
-## **Phase 4: Scaling \& Multi-Provider Support**
+## **Phase 4: Scaling & Multi-Provider Support**
 
 ### **Priority:** MEDIUM
 
@@ -304,7 +448,7 @@ Comprehensive enhancement plan for the wp-nitter-scraper-gpu plugin to improve f
     - Try each (cycling through keys if multiple)
     - On success: Save `hosting_provider` in DB, return URL
     - On all priority 1 fail → try priority 2, then 3
-    - On total failure → return error (retry mechanism from Feature 2.2 kicks in)
+    - On total failure → return error (retry mechanism from Feature 3.1 kicks in)
 
 **Files to Create:**
 
@@ -319,55 +463,7 @@ Comprehensive enhancement plan for the wp-nitter-scraper-gpu plugin to improve f
 
 ***
 
-## **Phase 5: Admin Tools \& Management**
-
-### **Priority:** MEDIUM
-
-### **Estimated Time:** 3-4 days
-
-### **Feature 5.1: Bulk Account Import/Export**
-
-**Objective:** Upload/download account lists via TXT file.
-
-**File Format (TXT):**
-
-```
-username1
-username2,60
-https://twitter.com/username3,90
-@username4
-```
-
-**Import Features:**
-
-- Drag-and-drop file upload
-- Parse: username, retention days (default if not specified)
-- Normalize: Strip whitespace, handle URLs, remove @
-- Validate: Check format
-- Deduplicate: Skip existing accounts, report count
-- Preview before confirm
-- Show: "X imported, Y duplicates skipped, Z invalid"
-
-**Export Features:**
-
-- Button: "Export Accounts"
-- Format: `username,retention_days`
-- Filename: `nitter-accounts-YYYY-MM-DD-HHMMSS.txt`
-- Include: All accounts or filtered by status
-
-**AJAX Handlers:**
-
-- `nitter_import_accounts`
-- `nitter_export_accounts`
-
-**Files to Modify:**
-
-- `admin/accounts-page.php` (add import/export UI)
-- `ajax/accounts-ajax.php` (add handlers)
-
-***
-
-### **Feature 5.2: Export Logs to File**
+### **Feature 4.2: Export Logs to File**
 
 **Objective:** Download logs as TXT file for analysis/archiving.
 
@@ -376,7 +472,7 @@ https://twitter.com/username3,90
 - Button: "Export Logs" on logs page
 - Modal with filters:
     - Date range (start/end)
-    - Log type (from Phase 3.3)
+    - Log type (from Phase 2.2)
     - Account filter
 - Format options: CSV or plain text
 - Filename: `nitter-logs-YYYY-MM-DD-HHMMSS.txt`
@@ -391,101 +487,6 @@ https://twitter.com/username3,90
 
 - `admin/logs-page.php` (add export button + modal)
 - `ajax/logs-ajax.php` (add handler)
-
-***
-
-### **Feature 5.3: Configurable Log Retention**
-
-**Objective:** Control how long logs are stored.
-
-**Settings:**
-
-- Add dropdown: "Log retention days"
-    - Options: 1, 7, 30, 0 (never delete)
-    - Default: 7
-- Store as: `nitter_log_retention_days`
-
-**Daily Cron:**
-
-- New cron: `nitter_cleanup_logs` (once daily)
-- If retention > 0:
-    - `DELETE FROM logs WHERE created_at < NOW() - INTERVAL X DAY`
-- If 0: Do nothing (manual cleanup only)
-
-**Files to Modify:**
-
-- `admin/settings-page.php` (add retention setting)
-- `includes/class-cron-handler.php` (add cleanup cron)
-
-***
-
-### **Feature 5.4: "Read More" for Long Tweets**
-
-**Objective:** Collapse tweets over 400 characters with expand/collapse.
-
-**Server-Side (HTML):**
-
-- In tweet text rendering:
-    - If `mb_strlen($text) <= 400`: Display full text
-    - Else:
-        - Find last space before 400: `mb_strrpos(mb_substr($text, 0, 400), ' ')`
-        - Output structure:
-
-```html
-<span class="tweet-text-short" data-tweet-id="X">TRUNCATED...</span>
-<span class="tweet-text-full" data-tweet-id="X" style="display:none;">FULL TEXT</span>
-<a href="#" class="tweet-read-more" data-tweet-id="X">Read more</a>
-```
-
-
-**JavaScript:**
-
-- On click `.tweet-read-more`:
-    - Toggle visibility of `.tweet-text-short` / `.tweet-text-full`
-    - Change link text: "Read more" ↔ "Show less"
-    - Prevent default
-
-**CSS:**
-
-- Style `.tweet-read-more` as link (blue, pointer cursor)
-- Optional smooth transition
-
-**Files to Modify:**
-
-- `admin/tweets-page.php` (truncation logic)
-- `ajax/tweets-ajax.php` (if tweets load via AJAX)
-- `assets/admin.js` (add toggle handler)
-- `assets/admin.css` (styling)
-
-***
-
-## **Phase 6: Cron \& System Integration**
-
-### **Priority:** MEDIUM
-
-### **Estimated Time:** 2 days
-
-### **Feature 6.1: System Cron for Account Scraping**
-
-**Objective:** Move account scraping from WP-Cron to Windows Task Scheduler for reliability.
-
-**Implementation:**
-
-- Create entry point: `cron-scrape-accounts.php`
-    - Bootstrap WordPress (`wp-load.php`)
-    - Call existing scrape method manually
-- Windows Task Scheduler setup:
-    - Command: `C:\xampp\php\php.exe C:\xampp\htdocs\wp-content\plugins\nitter-scraper\cron-scrape-accounts.php`
-    - Schedule: Every 60 minutes
-- Keep WP-Cron hook as fallback (optional disable via setting)
-
-**Files to Create:**
-
-- `cron-scrape-accounts.php`
-
-**Files to Modify:**
-
-- `includes/class-cron-handler.php` (optional: add setting to disable WP-Cron version)
 
 ***
 
@@ -527,19 +528,19 @@ ADD COLUMN date_scraped DATETIME DEFAULT CURRENT_TIMESTAMP;
 **Phase 2 Migrations:**
 
 ```sql
--- images/media table
-ALTER TABLE {prefix}nitter_images 
-ADD COLUMN upload_attempts INT DEFAULT 0,
-ADD COLUMN last_upload_attempt DATETIME NULL,
-ADD COLUMN upload_status ENUM('pending','success','failed','retrying','failed_permanent') DEFAULT 'pending';
+-- logs table
+ALTER TABLE {prefix}nitter_logs 
+ADD COLUMN log_type ENUM('scrape_image','scrape_video','conversion','upload','cron','system','other') DEFAULT 'other';
 ```
 
 **Phase 3 Migrations:**
 
 ```sql
--- logs table
-ALTER TABLE {prefix}nitter_logs 
-ADD COLUMN log_type ENUM('scrape_image','scrape_video','conversion','upload','cron','other') DEFAULT 'other';
+-- images/media table
+ALTER TABLE {prefix}nitter_images 
+ADD COLUMN upload_attempts INT DEFAULT 0,
+ADD COLUMN last_upload_attempt DATETIME NULL,
+ADD COLUMN upload_status ENUM('pending','success','failed','retrying','failed_permanent') DEFAULT 'pending';
 ```
 
 **Phase 4 Migrations:**
@@ -550,6 +551,25 @@ ALTER TABLE {prefix}nitter_images
 ADD COLUMN hosting_provider VARCHAR(50) DEFAULT 'imgbb';
 ```
 
+***
+
+## **Installation & Setup**
+
+### **Initial Plugin Setup:**
+
+1. Install plugin in `wp-content/plugins/nitter-scraper/`
+2. Activate plugin via WordPress admin
+3. Plugin automatically creates database tables
+4. **No default Nitter instances are added** - you must add your own custom instances
+5. Configure your custom Nitter instances in Settings → Nitter Instances
+6. Add accounts to scrape in Accounts tab
+
+### **Required Configuration:**
+
+- ImgBB API key (for GIF uploads)
+- Custom Nitter instance URLs
+- FFmpeg and FFprobe paths (auto-detected on Windows/XAMPP)
+- Node.js scraper service URL
 
 ***
 
@@ -564,25 +584,30 @@ ADD COLUMN hosting_provider VARCHAR(50) DEFAULT 'imgbb';
 - [ ] Reconciliation cron detects and promotes orphans
 - [ ] Orphaned tweets appear at top after reconciliation
 
-
 ### **Phase 2 Testing:**
 
 - [ ] Landscape videos use width constraint
 - [ ] Portrait videos use height constraint
 - [ ] First pass >70MB triggers early abort
 - [ ] Early abort threshold setting works
-- [ ] Failed uploads retry 3 times with backoff
-- [ ] Daily cron retries failed uploads
-- [ ] After 5 failures, marked `failed_permanent`
-
+- [ ] Logs filterable by type (image/video/upload/cron/system)
+- [ ] All log calls include correct type
+- [ ] Bulk account import works with TXT file
+- [ ] Bulk account export generates correct format
+- [ ] Log retention setting deletes old logs
+- [ ] Manual log cleanup button works
+- [ ] System cron setup instructions correct
+- [ ] Windows Task Scheduler runs scraping successfully
 
 ### **Phase 3 Testing:**
 
+- [ ] Failed uploads retry 3 times with backoff
+- [ ] Daily cron retries failed uploads
+- [ ] After 5 failures, marked `failed_permanent`
 - [ ] Text-only tweets skipped when setting enabled
 - [ ] GIF names are randomized (adjective-noun-hash)
-- [ ] Logs filterable by type (image/video/upload/cron)
-- [ ] All log calls include correct type
-
+- [ ] Tweets >400 chars show "Read more"
+- [ ] Expand/collapse works smoothly
 
 ### **Phase 4 Testing:**
 
@@ -591,24 +616,7 @@ ADD COLUMN hosting_provider VARCHAR(50) DEFAULT 'imgbb';
 - [ ] Fallback to next priority on failure
 - [ ] `hosting_provider` saved correctly in DB
 - [ ] Each provider tested individually
-
-
-### **Phase 5 Testing:**
-
-- [ ] Import TXT file with various formats
-- [ ] Duplicates detected and skipped
-- [ ] Export includes all accounts with metadata
 - [ ] Log export filters work (date/type/account)
-- [ ] Tweets >400 chars show "Read more"
-- [ ] Expand/collapse works smoothly
-- [ ] Log retention cron deletes old logs
-
-
-### **Phase 6 Testing:**
-
-- [ ] Windows Task Scheduler runs cron successfully
-- [ ] Account scraping works via system cron
-- [ ] WP-Cron can be disabled if desired
 
 ***
 
@@ -620,14 +628,12 @@ ADD COLUMN hosting_provider VARCHAR(50) DEFAULT 'imgbb';
 - Monitor VRAM usage (each decode process consumes memory)
 - Expected capacity: 5 videos simultaneously without issue
 
-
 ### **Database Queries:**
 
 - Add indexes on new columns:
     - `feed_status`, `date_published` for feed queries
     - `upload_status`, `upload_attempts` for retry queries
     - `log_type` for log filtering
-
 
 ### **Disk Space:**
 
@@ -644,5 +650,6 @@ ADD COLUMN hosting_provider VARCHAR(50) DEFAULT 'imgbb';
 - [ ] Settings guide: Explain all new settings
 - [ ] API documentation: Multi-provider setup instructions
 - [ ] Troubleshooting: Common issues with GPU, upload providers
+- [ ] Custom Nitter instances: How to set up and configure
 
 ***
