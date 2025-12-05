@@ -6,7 +6,7 @@ if (!defined('ABSPATH')) {
 class Nitter_Database {
     
     private $wpdb;
-    private $db_version = '1.1.0'; // Phase 1 version
+    private $db_version = '1.2.0'; // Phase 2 version
     
     public function __construct() {
         global $wpdb;
@@ -65,7 +65,7 @@ class Nitter_Database {
             original_video_url varchar(500) NULL,
             video_duration int(11) NULL COMMENT 'Duration in seconds',
             conversion_attempts int(11) NOT NULL DEFAULT 0,
-            conversion_status enum('pending','processing','completed','failed','skipped') NULL,
+            conversion_status enum('pending','processing','completed','failed','skipped','skipped_too_complex') NULL,
             file_size_bytes bigint(20) NULL,
             date_saved datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
@@ -86,11 +86,11 @@ class Nitter_Database {
             UNIQUE KEY instance_url (instance_url)
         ) $charset_collate;";
         
-        // Logs table
+        // Logs table - PHASE 2 ENHANCED
         $logs_table = $this->wpdb->prefix . 'nitter_logs';
         $logs_sql = "CREATE TABLE $logs_table (
             id int(11) NOT NULL AUTO_INCREMENT,
-            log_type varchar(50) NOT NULL,
+            log_type enum('scrape_image','scrape_video','conversion','upload','cron','system','feed','feed_reconciliation','other') NOT NULL DEFAULT 'other',
             message text NOT NULL,
             date_created datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
@@ -118,6 +118,9 @@ class Nitter_Database {
         
         // Run Phase 1 migrations
         $this->run_phase1_migrations();
+        
+        // Run Phase 2 migrations
+        $this->run_phase2_migrations();
         
         // Insert default instances
         $this->insert_default_instances();
@@ -171,24 +174,38 @@ class Nitter_Database {
         if ($backfill_count > 0) {
             $this->add_log('system', "Phase 1: Backfilled date_published for $backfill_count existing tweets");
         }
+    }
+    
+    /**
+     * PHASE 2: Run database migrations
+     */
+    private function run_phase2_migrations() {
+        $logs_table = $this->wpdb->prefix . 'nitter_logs';
+        $images_table = $this->wpdb->prefix . 'nitter_images';
         
-        // Add indexes for performance
-        $indexes = $this->wpdb->get_results("SHOW INDEX FROM $tweets_table");
-        $index_names = array();
-        foreach ($indexes as $index) {
-            $index_names[] = $index->Key_name;
+        // Check log_type column
+        $log_columns = $this->wpdb->get_results("SHOW COLUMNS FROM $logs_table WHERE Field = 'log_type'");
+        if (empty($log_columns)) {
+            // Add log_type if it doesn't exist
+            $this->wpdb->query("ALTER TABLE $logs_table ADD COLUMN log_type enum('scrape_image','scrape_video','conversion','upload','cron','system','feed','feed_reconciliation','other') NOT NULL DEFAULT 'other' AFTER id");
+            $this->add_log('system', 'Phase 2: Added log_type column to logs table');
+        } else {
+            // Update enum values if column exists but needs new values
+            $current_type = $log_columns[0]->Type;
+            if (strpos($current_type, 'feed_reconciliation') === false) {
+                $this->wpdb->query("ALTER TABLE $logs_table MODIFY COLUMN log_type enum('scrape_image','scrape_video','conversion','upload','cron','system','feed','feed_reconciliation','other') NOT NULL DEFAULT 'other'");
+                $this->add_log('system', 'Phase 2: Updated log_type enum values');
+            }
         }
         
-        if (!in_array('feed_status', $index_names)) {
-            $this->wpdb->query("ALTER TABLE $tweets_table ADD INDEX feed_status (feed_status)");
-        }
-        
-        if (!in_array('date_published', $index_names)) {
-            $this->wpdb->query("ALTER TABLE $tweets_table ADD INDEX date_published (date_published)");
-        }
-        
-        if (!in_array('in_feed', $index_names)) {
-            $this->wpdb->query("ALTER TABLE $tweets_table ADD INDEX in_feed (in_feed)");
+        // Check conversion_status enum for new value
+        $image_columns = $this->wpdb->get_results("SHOW COLUMNS FROM $images_table WHERE Field = 'conversion_status'");
+        if (!empty($image_columns)) {
+            $current_type = $image_columns[0]->Type;
+            if (strpos($current_type, 'skipped_too_complex') === false) {
+                $this->wpdb->query("ALTER TABLE $images_table MODIFY COLUMN conversion_status enum('pending','processing','completed','failed','skipped','skipped_too_complex') NULL");
+                $this->add_log('system', 'Phase 2: Updated conversion_status enum to include skipped_too_complex');
+            }
         }
     }
     
@@ -230,7 +247,11 @@ class Nitter_Database {
             'imgbb_api_key' => '',
             'auto_delete_local_files' => '1',
             'temp_folder_path' => 'C:\\xampp\\htdocs\\wp-content\\uploads\\nitter-temp',
-            'parallel_video_count' => '5'
+            'parallel_video_count' => '5',
+            'first_pass_abort_threshold_mb' => '70', // PHASE 2
+            'log_retention_days' => '7', // PHASE 2
+            'use_system_cron' => '0', // PHASE 2
+            'system_cron_interval' => '60' // PHASE 2
         );
         
         $settings_table = $this->wpdb->prefix . 'nitter_settings';
@@ -299,7 +320,7 @@ class Nitter_Database {
         }
         
         if ($result !== false && $log) {
-            $this->add_log('settings', "Setting updated: $key");
+            $this->add_log('system', "Setting updated: $key");
         }
         
         return $result;
@@ -340,11 +361,57 @@ class Nitter_Database {
         );
         
         if ($result) {
-            $this->add_log('account', "Account added: $account_username");
+            $this->add_log('system', "Account added: $account_username");
             return $this->wpdb->insert_id;
         }
         
         return false;
+    }
+    
+    /**
+     * PHASE 2 Feature 2.3: Bulk add accounts from array
+     */
+    public function bulk_add_accounts($accounts_array) {
+        $imported = 0;
+        $duplicates = 0;
+        $invalid = 0;
+        
+        foreach ($accounts_array as $account_data) {
+            // Validate
+            if (empty($account_data['username'])) {
+                $invalid++;
+                continue;
+            }
+            
+            // Check for duplicate
+            $exists = $this->wpdb->get_var($this->wpdb->prepare(
+                "SELECT id FROM {$this->wpdb->prefix}nitter_accounts WHERE account_username = %s",
+                $account_data['username']
+            ));
+            
+            if ($exists) {
+                $duplicates++;
+                continue;
+            }
+            
+            // Add account
+            $url = 'https://twitter.com/' . $account_data['username'];
+            $retention = isset($account_data['retention_days']) ? intval($account_data['retention_days']) : 30;
+            
+            $result = $this->add_account($url, $account_data['username'], $retention);
+            
+            if ($result) {
+                $imported++;
+            } else {
+                $invalid++;
+            }
+        }
+        
+        return array(
+            'imported' => $imported,
+            'duplicates' => $duplicates,
+            'invalid' => $invalid
+        );
     }
     
     public function get_accounts() {
@@ -378,7 +445,7 @@ class Nitter_Database {
         $result = $this->wpdb->delete($table, array('id' => $id), array('%d'));
         
         if ($result) {
-            $this->add_log('account', "Account deleted: " . $account->account_username);
+            $this->add_log('system', "Account deleted: " . $account->account_username);
         }
         
         return $result;
@@ -553,7 +620,7 @@ class Nitter_Database {
         $result = $this->wpdb->query($sql);
         
         if ($error_message) {
-            $this->add_log('video_conversion', "Video conversion $status (ID: $id): $error_message");
+            $this->add_log('conversion', "Video conversion $status (ID: $id): $error_message");
         }
         
         return $result;
@@ -606,6 +673,9 @@ class Nitter_Database {
         );
     }
     
+    /**
+     * PHASE 2 Feature 2.2: Enhanced logging with log type
+     */
     public function add_log($type, $message) {
         $table = $this->wpdb->prefix . 'nitter_logs';
         
@@ -624,8 +694,20 @@ class Nitter_Database {
         );
     }
     
-    public function get_logs($limit = 100) {
+    /**
+     * PHASE 2 Feature 2.2: Get logs with optional type filter
+     */
+    public function get_logs($limit = 100, $log_type = null) {
         $table = $this->wpdb->prefix . 'nitter_logs';
+        
+        if ($log_type && $log_type !== 'all') {
+            return $this->wpdb->get_results($this->wpdb->prepare(
+                "SELECT * FROM $table WHERE log_type = %s ORDER BY date_created DESC LIMIT %d",
+                $log_type,
+                $limit
+            ));
+        }
+        
         return $this->wpdb->get_results($this->wpdb->prepare(
             "SELECT * FROM $table ORDER BY date_created DESC LIMIT %d",
             $limit
@@ -643,14 +725,26 @@ class Nitter_Database {
         return $result;
     }
     
+    /**
+     * PHASE 2 Feature 2.4: Delete old logs based on retention setting
+     */
     public function delete_old_logs() {
         $table = $this->wpdb->prefix . 'nitter_logs';
-        $date = date('Y-m-d H:i:s', strtotime('-7 days'));
+        $retention_days = intval($this->get_setting('log_retention_days', 7));
         
-        return $this->wpdb->query($this->wpdb->prepare(
+        // If retention is 0, never delete
+        if ($retention_days === 0) {
+            return 0;
+        }
+        
+        $date = date('Y-m-d H:i:s', strtotime("-{$retention_days} days"));
+        
+        $result = $this->wpdb->query($this->wpdb->prepare(
             "DELETE FROM $table WHERE date_created < %s",
             $date
         ));
+        
+        return $result;
     }
     
     public function delete_account_data($account_id) {
@@ -721,7 +815,7 @@ class Nitter_Database {
             ));
             
             if ($deleted_count > 0) {
-                $this->add_log('cleanup', "Deleted $deleted_count old tweets for account: {$account->account_username}");
+                $this->add_log('cron', "Deleted $deleted_count old tweets for account: {$account->account_username}");
             }
         }
     }
