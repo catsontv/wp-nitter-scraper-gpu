@@ -22,7 +22,7 @@ class Nitter_API {
         ));
         
         if (is_wp_error($response)) {
-            $this->database->add_log('api', 'Service test failed: ' . $response->get_error_message());
+            $this->database->add_log('system', 'Service test failed: ' . $response->get_error_message());
             return array(
                 'success' => false,
                 'message' => 'Connection failed: ' . $response->get_error_message()
@@ -33,14 +33,14 @@ class Nitter_API {
         $body = wp_remote_retrieve_body($response);
         
         if ($status_code === 200) {
-            $this->database->add_log('api', 'Service test successful');
+            $this->database->add_log('system', 'Service test successful');
             return array(
                 'success' => true,
                 'message' => 'Node.js service is running',
                 'data' => json_decode($body, true)
             );
         } else {
-            $this->database->add_log('api', 'Service test failed with status: ' . $status_code);
+            $this->database->add_log('system', 'Service test failed with status: ' . $status_code);
             return array(
                 'success' => false,
                 'message' => 'Service returned status: ' . $status_code
@@ -95,14 +95,14 @@ class Nitter_API {
         
         $instances = $this->database->get_active_instances();
         if (empty($instances)) {
-            $this->database->add_log('scraping', 'No active instances available for scraping');
+            $this->database->add_log('scrape_image', 'No active instances available for scraping');
             return array(
                 'success' => false,
                 'message' => 'No active instances available'
             );
         }
         
-        $this->database->add_log('scraping', 'Starting scrape for account: ' . $account->account_username);
+        $this->database->add_log('scrape_image', 'Starting scrape for account: ' . $account->account_username);
         
         $response = wp_remote_post($this->node_service_url . '/scrape-account', array(
             'timeout' => 300,
@@ -122,7 +122,7 @@ class Nitter_API {
         
         if (is_wp_error($response)) {
             $error_message = 'Scraping failed: ' . $response->get_error_message();
-            $this->database->add_log('scraping', $error_message);
+            $this->database->add_log('scrape_image', $error_message);
             return array(
                 'success' => false,
                 'message' => $error_message
@@ -135,14 +135,14 @@ class Nitter_API {
         
         if ($status_code === 200 && isset($data['success']) && $data['success']) {
             $this->database->update_last_scraped($account_id);
-            $this->database->add_log('scraping', 'Scraping started successfully for: ' . $account->account_username);
+            $this->database->add_log('scrape_image', 'Scraping started successfully for: ' . $account->account_username);
             return array(
                 'success' => true,
                 'message' => 'Scraping started successfully'
             );
         } else {
             $error_message = isset($data['message']) ? $data['message'] : 'Scraping request failed';
-            $this->database->add_log('scraping', 'Scraping failed for ' . $account->account_username . ': ' . $error_message);
+            $this->database->add_log('scrape_image', 'Scraping failed for ' . $account->account_username . ': ' . $error_message);
             return array(
                 'success' => false,
                 'message' => $error_message
@@ -150,14 +150,9 @@ class Nitter_API {
         }
     }
     
-    /**
-     * PHASE 1+2: receive_scraped_data now sets feed_status based on media
-     * - Image-only tweets: feed_status = 'published' (immediate)
-     * - Video tweets: feed_status = 'pending' until GIF conversion completes
-     */
     public function receive_scraped_data($data) {
         if (!isset($data['account_id']) || !isset($data['tweets'])) {
-            $this->database->add_log('scraping', 'Invalid scraped data received');
+            $this->database->add_log('scrape_image', 'Invalid scraped data received');
             return array(
                 'success' => false,
                 'message' => 'Invalid data format'
@@ -172,7 +167,6 @@ class Nitter_API {
         
         $media_handler = new Nitter_Media_Handler();
         
-        // Check if video scraping is enabled
         $video_scraping_enabled = $this->database->get_setting('enable_video_scraping', '0') === '1';
         
         foreach ($tweets as $tweet_data) {
@@ -180,7 +174,6 @@ class Nitter_API {
                 continue;
             }
             
-            // Check if tweet already exists
             global $wpdb;
             $tweets_table = $wpdb->prefix . 'nitter_tweets';
             $existing_tweet = $wpdb->get_var($wpdb->prepare(
@@ -195,22 +188,17 @@ class Nitter_API {
             $media_type = isset($tweet_data['media_type']) ? $tweet_data['media_type'] : 'image';
             $is_video = $media_type === 'video';
             
-            // Count media items
             if ($is_video) {
                 $media_count = isset($tweet_data['video_url']) && !empty($tweet_data['video_url']) ? 1 : 0;
             } else {
                 $media_count = isset($tweet_data['images']) ? count($tweet_data['images']) : 0;
             }
             
-            // Decide feed_status at creation time
-            // - Image tweets: published immediately
-            // - Video tweets: pending until GIF ready
             $feed_status = 'published';
             if ($is_video && $media_count > 0 && $video_scraping_enabled) {
                 $feed_status = 'pending';
             }
             
-            // Add tweet to database with Phase 1 fields
             $tweet_result = $this->database->add_tweet(
                 $account_id,
                 $tweet_data['tweet_id'],
@@ -230,15 +218,14 @@ class Nitter_API {
                         
                         if ($video_result) {
                             $videos_added++;
-                            $this->database->add_log('video', "Video entry added (pending): Tweet ID {$tweet_data['tweet_id']}, URL: {$tweet_data['video_url']}");
+                            $this->database->add_log('scrape_video', "Video entry added (pending): Tweet ID {$tweet_data['tweet_id']}, URL: {$tweet_data['video_url']}");
                         } else {
-                            $this->database->add_log('video', "Failed to add video entry for Tweet ID {$tweet_data['tweet_id']}");
+                            $this->database->add_log('scrape_video', "Failed to add video entry for Tweet ID {$tweet_data['tweet_id']}");
                         }
                     } else {
-                        $this->database->add_log('video', "Video skipped (video scraping disabled): Tweet ID {$tweet_data['tweet_id']}");
+                        $this->database->add_log('scrape_video', "Video skipped (video scraping disabled): Tweet ID {$tweet_data['tweet_id']}");
                     }
                 } elseif (isset($tweet_data['images']) && is_array($tweet_data['images'])) {
-                    // Image tweets: upload to media library immediately
                     foreach ($tweet_data['images'] as $image_data) {
                         $attachment_id = $media_handler->save_image_to_media_library($image_data);
                         
@@ -259,9 +246,10 @@ class Nitter_API {
         $account_name = $account ? $account->account_username : 'Unknown';
         
         if ($videos_added > 0) {
-            $this->database->add_log('scraping', "Scraping completed for $account_name: $tweets_added tweets, $images_added images, $videos_added videos (pending conversion)");
-        } else {
-            $this->database->add_log('scraping', "Scraping completed for $account_name: $tweets_added tweets, $images_added images added");
+            $this->database->add_log('scrape_video', "Scraping completed for $account_name: $tweets_added tweets, $images_added images, $videos_added videos (pending conversion)");
+        }
+        if ($images_added > 0) {
+            $this->database->add_log('scrape_image', "Scraping completed for $account_name: $tweets_added tweets, $images_added images added");
         }
         
         return array(
