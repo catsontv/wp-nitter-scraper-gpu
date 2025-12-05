@@ -13,23 +13,6 @@ $media_handler = $nitter_admin->get_media_handler();
 $message = '';
 $message_type = '';
 
-if (isset($_POST['update_system_cron']) && wp_verify_nonce($_POST['nonce'], 'nitter_update_system_cron')) {
-    $use_system_cron = isset($_POST['use_system_cron']) ? '1' : '0';
-    $system_cron_interval = intval($_POST['system_cron_interval']);
-    
-    if ($system_cron_interval < 1) {
-        $system_cron_interval = 60;
-    }
-    
-    $database->update_setting('use_system_cron', $use_system_cron, false);
-    $database->update_setting('system_cron_interval', $system_cron_interval, false);
-    
-    $database->add_log('system', 'System cron settings updated: ' . ($use_system_cron === '1' ? 'enabled' : 'disabled') . ', interval: ' . $system_cron_interval . ' minutes');
-    
-    $message = 'System cron settings updated successfully';
-    $message_type = 'success';
-}
-
 if (isset($_POST['add_instance']) && wp_verify_nonce($_POST['nonce'], 'nitter_add_instance')) {
     $instance_url = sanitize_url($_POST['instance_url']);
     
@@ -106,15 +89,6 @@ $next_scrape = $cron_handler->get_next_auto_scrape_time();
 // Get media stats
 $media_stats = $media_handler->get_media_library_stats();
 
-// Get system cron settings
-$use_system_cron = $database->get_setting('use_system_cron', '0');
-$system_cron_interval = $database->get_setting('system_cron_interval', '60');
-
-// Generate paths for Task Scheduler
-$plugin_path = plugin_dir_path(dirname(__FILE__));
-$cron_file_path = $plugin_path . 'cron-scrape-accounts.php';
-$php_path = PHP_BINARY; // Gets the PHP executable path
-
 ?>
 
 <div class="nitter-admin-wrap">
@@ -125,75 +99,6 @@ $php_path = PHP_BINARY; // Gets the PHP executable path
             <?php echo esc_html($message); ?>
         </div>
     <?php endif; ?>
-    
-    <h2>System Cron Configuration</h2>
-    <div class="nitter-form" style="background: #f9f9f9; border: 1px solid #ddd; padding: 20px; margin-bottom: 30px;">
-        <form method="post">
-            <?php wp_nonce_field('nitter_update_system_cron', 'nonce'); ?>
-            
-            <div class="nitter-form-row">
-                <label>
-                    <input type="checkbox" name="use_system_cron" value="1" <?php checked($use_system_cron, '1'); ?>>
-                    <strong>Enable System Cron (Recommended)</strong>
-                </label>
-                <p style="margin: 10px 0 0 25px; color: #666;">
-                    Use Windows Task Scheduler instead of WordPress Cron for more reliable scheduled scraping.
-                    This ensures scraping runs even when WordPress is not accessed.
-                </p>
-            </div>
-            
-            <div class="nitter-form-row">
-                <label for="system_cron_interval">Scraping Interval (minutes):</label>
-                <input type="number" id="system_cron_interval" name="system_cron_interval" 
-                       value="<?php echo esc_attr($system_cron_interval); ?>" 
-                       min="1" max="1440" style="width: 100px;">
-                <small>How often to scrape accounts (default: 60 minutes)</small>
-            </div>
-            
-            <div class="nitter-form-row">
-                <button type="submit" name="update_system_cron" class="nitter-btn">Save System Cron Settings</button>
-            </div>
-        </form>
-        
-        <?php if ($use_system_cron === '1'): ?>
-            <div style="background: #d4edda; border: 1px solid #c3e6cb; padding: 15px; margin-top: 20px; border-radius: 4px;">
-                <h3 style="margin-top: 0; color: #155724;">✓ System Cron is ENABLED</h3>
-                <p><strong>Status:</strong> WordPress Cron is disabled. Using Windows Task Scheduler.</p>
-                <p><strong>Interval:</strong> Every <?php echo esc_html($system_cron_interval); ?> minutes</p>
-                
-                <h4 style="margin-top: 20px;">Windows Task Scheduler Setup:</h4>
-                <ol style="line-height: 1.8;">
-                    <li>Open <strong>Task Scheduler</strong> (Win+R, type <code>taskschd.msc</code>)</li>
-                    <li>Click <strong>Create Basic Task</strong></li>
-                    <li>Name: <code>Nitter Account Scraper</code></li>
-                    <li>Trigger: <strong>Daily</strong>, then set to repeat every <strong><?php echo esc_html($system_cron_interval); ?> minutes</strong></li>
-                    <li>Action: <strong>Start a program</strong></li>
-                    <li>Use the command below:</li>
-                </ol>
-                
-                <div style="background: #fff; border: 1px solid #ccc; padding: 15px; margin: 15px 0; border-radius: 4px;">
-                    <p><strong>Program/script:</strong></p>
-                    <pre style="background: #f5f5f5; padding: 10px; overflow-x: auto; border-radius: 3px;"><?php echo esc_html($php_path); ?></pre>
-                    
-                    <p><strong>Add arguments:</strong></p>
-                    <pre style="background: #f5f5f5; padding: 10px; overflow-x: auto; border-radius: 3px;"><?php echo esc_html($cron_file_path); ?></pre>
-                    
-                    <p><strong>Start in:</strong></p>
-                    <pre style="background: #f5f5f5; padding: 10px; overflow-x: auto; border-radius: 3px;"><?php echo esc_html(dirname($cron_file_path)); ?></pre>
-                </div>
-                
-                <p style="color: #856404; background: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; border-radius: 4px;">
-                    <strong>⚠️ Important:</strong> The Node.js scraper service must be running on port 3001 for this to work.
-                </p>
-            </div>
-        <?php else: ?>
-            <div style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; margin-top: 20px; border-radius: 4px;">
-                <h3 style="margin-top: 0; color: #856404;">⚠️ System Cron is DISABLED</h3>
-                <p><strong>Status:</strong> Using WordPress Cron (less reliable)</p>
-                <p>WordPress Cron only runs when someone visits your site. For consistent hourly scraping, enable System Cron above.</p>
-            </div>
-        <?php endif; ?>
-    </div>
     
     <h2>Service Status</h2>
     <div class="nitter-form">
@@ -289,11 +194,7 @@ $php_path = PHP_BINARY; // Gets the PHP executable path
         <h3>Cleanup Schedule</h3>
         <p><strong>Next Content Cleanup:</strong> <?php echo esc_html($cleanup_times['content']); ?></p>
         <p><strong>Next Log Cleanup:</strong> <?php echo esc_html($cleanup_times['logs']); ?></p>
-        <?php if ($use_system_cron !== '1'): ?>
-            <p><strong>Next Auto-Scrape (WP-Cron):</strong> <?php echo esc_html($next_scrape); ?></p>
-        <?php else: ?>
-            <p><strong>Next Auto-Scrape:</strong> Managed by Windows Task Scheduler (every <?php echo esc_html($system_cron_interval); ?> minutes)</p>
-        <?php endif; ?>
+        <p><strong>Next Auto-Scrape:</strong> <?php echo esc_html($next_scrape); ?></p>
         
         <h3>Media Library</h3>
         <p><strong>Total Images:</strong> <?php echo esc_html($media_stats['total_images']); ?></p>
